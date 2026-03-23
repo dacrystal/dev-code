@@ -1,24 +1,17 @@
 name: Publish
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    # No `branches` filter — tag pushes run on a refs/tags/ ref, not a branch ref.
-    # A branches filter here would silently prevent the event from firing on tag pushes.
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   publish:
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
     runs-on: ubuntu-latest
     permissions:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - uses: actions/setup-python@v5
         with:
