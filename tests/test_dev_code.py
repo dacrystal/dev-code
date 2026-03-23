@@ -26,6 +26,10 @@ class TestSmoke(unittest.TestCase):
         assert callable(dev_code.resolve_template_dir)
         assert callable(dev_code.resolve_template)
 
+    def test_banner_is_string(self):
+        assert isinstance(dev_code.BANNER, str)
+        assert len(dev_code.BANNER) > 0
+
 
 class TestParseDevcontainerJson(unittest.TestCase):
     def _write_json(self, content: str) -> str:
@@ -1050,3 +1054,17 @@ class TestCmdOpenDryRun(unittest.TestCase):
                         dev_code.cmd_open(args)
         combined = "\n".join(lines)
         self.assertIn("<unset:", combined)
+
+
+class TestBanner(unittest.TestCase):
+    def test_help_contains_tagline(self):
+        """Banner tagline appears in --help output.
+        Uses subprocess to avoid argparse SystemExit contaminating the test runner.
+        """
+        result = subprocess.run(
+            ["uv", "run", "python", "src/dev_code.py", "--help"],
+            capture_output=True, text=True,
+            cwd=os.path.join(os.path.dirname(__file__), ".."),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("project · editor · container — simplified", result.stdout)

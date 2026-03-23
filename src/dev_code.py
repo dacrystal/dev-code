@@ -11,6 +11,16 @@ import time
 
 logger = logging.getLogger("dev-code")
 
+BANNER = (
+    "     _                                _\n"
+    "    | |                              | |\n"
+    "  __| | _____   ________ ___ ___   __| | ___\n"
+    " / _` |/ _ \\ \\ / /______/ __/ _ \\ / _` |/ _ \\\n"
+    "| (_| |  __/\\ V /      | (_| (_) | (_| |  __/\n"
+    " \\__,_|\\___| \\_/        \\___\\___/ \\__,_|\\___|\n"
+    "  project · editor · container — simplified  "
+)
+
 
 def _configure_logging(verbose: bool) -> None:
     """Configure the module logger. Guard prevents double-registration."""
@@ -625,10 +635,18 @@ def cmd_ps(args) -> None:
         print(fmt_row(row))
 
 
+class _BannerFormatter(argparse.RawDescriptionHelpFormatter):
+    def format_help(self):
+        return BANNER + "\n\n" + super().format_help()
+
+
 def main():
-    parser = argparse.ArgumentParser(prog="dev-code")
+    parser = argparse.ArgumentParser(
+        prog="dev-code",
+        formatter_class=_BannerFormatter,
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
-    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    subparsers = parser.add_subparsers(dest="subcommand")
 
     p_open = subparsers.add_parser("open")
     p_open.add_argument("template")
@@ -653,6 +671,9 @@ def main():
     subparsers.add_parser("ps")
 
     args = parser.parse_args()
+    if args.subcommand is None:
+        parser.print_help()
+        sys.exit(0)
     _configure_logging(args.verbose)
 
     dispatch = {

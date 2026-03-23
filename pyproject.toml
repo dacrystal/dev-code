@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "devcontainer-templates"
 version = "0.1.0"
 requires-python = ">=3.10"
+dependencies = []
 
 [project.scripts]
 dev-code = "dev_code:main"
@@ -19,4 +20,5 @@ testpaths = ["tests"]
 [dependency-groups]
 dev = [
     "pytest>=7.0.1",
+    "pyfiglet>=1.0.4",
 ]
