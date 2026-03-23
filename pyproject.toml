@@ -5,6 +5,8 @@ build-backend = "hatchling.build"
 [project]
 name = "dev-code"
 dynamic = ["version"]
+description = "Project · editor · container — simplified"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
