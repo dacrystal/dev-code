@@ -365,16 +365,16 @@ def cmd_open(args) -> None:
         logger.error("projectpath must not resolve to /")
         sys.exit(1)
 
-    if not shutil.which("code"):
-        logger.error("'code' not found on PATH")
-        sys.exit(1)
-
     container_folder = args.container_folder or f"/workspaces/{os.path.basename(project_path)}"
     uri = build_devcontainer_uri(project_path, config_file, container_folder)
 
     if args.dry_run:
         _cmd_open_dry_run(config_file, project_path, uri)
         return
+
+    if not shutil.which("code"):
+        logger.error("'code' not found on PATH")
+        sys.exit(1)
 
     subprocess.Popen(["code", "--folder-uri", uri], start_new_session=True)
     run_post_launch(config_file, project_path, args.timeout)

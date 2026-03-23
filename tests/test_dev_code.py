@@ -157,14 +157,14 @@ class TestResolveTemplateDir(unittest.TestCase):
                if k not in ("DEVCODE_TEMPLATE_DIR", "XDG_DATA_HOME")}
         with patch.dict(os.environ, {**env, "XDG_DATA_HOME": "/xdg"}, clear=True):
             result = dev_code.resolve_template_dir()
-        self.assertEqual(result, "/xdg/dev-code/templates")
+        self.assertEqual(os.path.normpath(result), os.path.normpath("/xdg/dev-code/templates"))
 
     def test_default_xdg(self):
         env = {k: v for k, v in os.environ.items()
                if k not in ("DEVCODE_TEMPLATE_DIR", "XDG_DATA_HOME")}
         with patch.dict(os.environ, env, clear=True):
             result = dev_code.resolve_template_dir()
-        self.assertIn(".local/share/dev-code/templates", result)
+        self.assertIn(os.path.join(".local", "share", "dev-code", "templates"), result)
 
 
 class TestGetBuiltinTemplatePath(unittest.TestCase):
@@ -504,19 +504,19 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
-                with patch("subprocess.run", side_effect=fake_run):
-                    with patch("os.path.exists", return_value=True):
-                        with patch("os.path.isdir", return_value=False):
-                            dev_code.run_post_launch(
-                                "/some/profile/.devcontainer/devcontainer.json",
-                                "/proj", 300
-                            )
+        with tempfile.TemporaryDirectory() as config_dir:
+            config_file = os.path.join(config_dir, "devcontainer.json")
+            with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
+                with patch.object(dev_code, "wait_for_container", return_value="cid"):
+                    with patch("subprocess.run", side_effect=fake_run):
+                        with patch("os.path.exists", return_value=True):
+                            with patch("os.path.isdir", return_value=False):
+                                dev_code.run_post_launch(config_file, "/proj", 300)
         self.assertEqual(len(cp_calls), 1)
         # Third arg to "docker cp" is the host source path
         resolved_src = cp_calls[0][2]
-        self.assertIn("/some/profile/.devcontainer/claude-config", resolved_src)
+        expected_dir = os.path.join(config_dir, "claude-config")
+        self.assertIn(expected_dir, resolved_src)
         self.assertIn("settings.json", resolved_src)
 
     def test_absolute_source_not_modified(self):
@@ -629,7 +629,6 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_dir_contents_relative_source_expands_to_children(self):
         """Relative source ending with /. expands just like an absolute source."""
-        # source is relative — config_dir will be "/src" so effective dir is /src/dotfiles
         entries = [{"source": "dotfiles/.", "target": "/home/user/", "Override": True}]
         config = self._make_config(entries)
         cp_calls = []
@@ -637,23 +636,28 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        children = ["/src/dotfiles/.bashrc", "/src/dotfiles/.gitconfig"]
-        def isdir_side_effect(path):
-            return path == "/src/dotfiles"
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
-                with patch("subprocess.run", side_effect=fake_run):
-                    with patch("os.path.exists", return_value=True):
-                        with patch("os.path.isdir", side_effect=isdir_side_effect):
-                            with patch.object(dev_code, "_list_dir_children",
-                                              return_value=children):
-                                # config_file="/src/fake.json" → config_dir="/src"
-                                dev_code.run_post_launch("/src/fake.json", "/proj", 300)
+        with tempfile.TemporaryDirectory() as config_dir:
+            config_file = os.path.join(config_dir, "fake.json")
+            dotfiles_dir = os.path.join(config_dir, "dotfiles")
+            children = [
+                os.path.join(dotfiles_dir, ".bashrc"),
+                os.path.join(dotfiles_dir, ".gitconfig"),
+            ]
+            def isdir_side_effect(path):
+                return os.path.normcase(path) == os.path.normcase(dotfiles_dir)
+            with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
+                with patch.object(dev_code, "wait_for_container", return_value="cid"):
+                    with patch("subprocess.run", side_effect=fake_run):
+                        with patch("os.path.exists", return_value=True):
+                            with patch("os.path.isdir", side_effect=isdir_side_effect):
+                                with patch.object(dev_code, "_list_dir_children",
+                                                  return_value=children):
+                                    dev_code.run_post_launch(config_file, "/proj", 300)
         # Must expand to one docker cp per child, NOT one cp of the whole dir
         self.assertEqual(len(cp_calls), 2)
         cp_sources = [c[2] for c in cp_calls]
-        self.assertIn("/src/dotfiles/.bashrc", cp_sources)
-        self.assertIn("/src/dotfiles/.gitconfig", cp_sources)
+        self.assertIn(os.path.join(dotfiles_dir, ".bashrc"), cp_sources)
+        self.assertIn(os.path.join(dotfiles_dir, ".gitconfig"), cp_sources)
 
     def test_dir_contents_source_without_trailing_slash_target_warns(self):
         """source/. with target not ending in / produces a warning."""
@@ -1063,7 +1067,7 @@ class TestBanner(unittest.TestCase):
         """
         result = subprocess.run(
             ["uv", "run", "python", "src/dev_code.py", "--help"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             cwd=os.path.join(os.path.dirname(__file__), ".."),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
