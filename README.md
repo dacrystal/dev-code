@@ -10,6 +10,8 @@
   project · editor · container — simplified
 ```
 
+[![Coverage](https://codecov.io/gh/YOUR_GITHUB_USERNAME/devcontainer-templates/branch/main/graph/badge.svg)](https://codecov.io/gh/YOUR_GITHUB_USERNAME/devcontainer-templates)
+
 [![PyPI version](https://img.shields.io/pypi/v/dev-code)](https://pypi.org/project/dev-code/)
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/dev-code)](https://pypi.org/project/dev-code/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)

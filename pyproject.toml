@@ -21,4 +21,6 @@ testpaths = ["tests"]
 dev = [
     "pytest>=7.0.1",
     "pyfiglet>=1.0.4",
+    "pytest-cov>=4.0",
+    "tox>=4.0",
 ]
