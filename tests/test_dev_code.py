@@ -109,14 +109,14 @@ class TestWaitForContainer(unittest.TestCase):
         with patch("subprocess.run", return_value=self._make_docker_result("")):
             with patch("time.sleep"):
                 # time.time() exceeds deadline immediately after first check
-                with patch("time.time", side_effect=[0, 0, 61]):
+                with patch("time.time", side_effect=[0, 0, 61, 61, 61]):
                     with self.assertRaises(SystemExit):
                         dev_code.wait_for_container("/fake.json", "/myproject", timeout=60)
 
     def test_timeout_message_includes_label_value(self):
         with patch("subprocess.run", return_value=self._make_docker_result("")):
             with patch("time.sleep"):
-                with patch("time.time", side_effect=[0, 0, 61]):
+                with patch("time.time", side_effect=[0, 0, 61, 61, 61]):
                     with self.assertLogs("dev-code", level="WARNING") as cm:
                         with self.assertRaises(SystemExit):
                             dev_code.wait_for_container("/fake.json", "/my/project", timeout=60)
@@ -126,7 +126,7 @@ class TestWaitForContainer(unittest.TestCase):
         result = self._make_docker_result("abc123\ndef456\n")
         with patch("subprocess.run", return_value=result):
             with patch("time.sleep"):
-                with patch("time.time", side_effect=[0, 1]):
+                with patch("time.time", side_effect=[0, 1, 1, 1, 1]):
                     with self.assertLogs("dev-code", level="WARNING") as cm:
                         cid = dev_code.wait_for_container("/fake.json", "/myproject", timeout=60)
         self.assertEqual(cid, "abc123")
