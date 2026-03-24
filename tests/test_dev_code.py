@@ -428,53 +428,77 @@ class TestRunPostLaunch(unittest.TestCase):
         self.assertTrue(any("target" in line.lower() for line in cm.output))
 
     def test_override_false_skips_when_target_exists(self):
-        entries = [{"source": "/src", "target": "/tgt", "Override": False}]
+        entries = [{"source": "/src", "target": "/tgt", "override": False}]
         calls = self._run(entries, target_exists=True)
         docker_cp_calls = [c for c in calls if "cp" in c]
         self.assertEqual(docker_cp_calls, [])
 
     def test_override_false_copies_when_target_absent(self):
-        entries = [{"source": "/src", "target": "/tgt", "Override": False}]
+        entries = [{"source": "/src", "target": "/tgt", "override": False}]
         calls = self._run(entries, target_exists=False)
         docker_cp_calls = [c for c in calls if "cp" in c]
         self.assertEqual(len(docker_cp_calls), 1)
 
     def test_override_true_always_copies(self):
-        entries = [{"source": "/src", "target": "/tgt", "Override": True}]
+        entries = [{"source": "/src", "target": "/tgt", "override": True}]
         calls = self._run(entries, target_exists=True)
         docker_cp_calls = [c for c in calls if "cp" in c]
         self.assertEqual(len(docker_cp_calls), 1)
 
-    def test_wrong_case_override_warns(self):
-        entries = [{"source": "/src", "target": "/tgt", "override": False}]
+    def test_capital_Override_warns(self):
+        """Capital-O 'Override' is an unknown field and triggers the unknown-field warning."""
+        entries = [{"source": "/src", "target": "/tgt", "Override": True}]
         with self.assertLogs("dev-code", level="WARNING") as cm:
             self._run(entries)
-        self.assertTrue(any("override" in line.lower() for line in cm.output))
+        self.assertTrue(any("Override" in line for line in cm.output))
+
+    def test_unknown_field_warns(self):
+        """Any field not in the known schema triggers a warning."""
+        entries = [{"source": "/src", "target": "/tgt", "typo_field": "bad", "override": True}]
+        with self.assertLogs("dev-code", level="WARNING") as cm:
+            self._run(entries)
+        self.assertTrue(any("typo_field" in line for line in cm.output))
+
+    def test_unknown_field_warns_once_for_dir_expansion(self):
+        """Unknown-field warning fires once for the parent entry, not once per expanded child."""
+        entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "bad_key": "x", "override": True}]
+        config = self._make_config(entries)
+        children = ["/src/dotfiles/.bashrc", "/src/dotfiles/.zshrc"]
+        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+                with patch("subprocess.run", return_value=MagicMock(returncode=0)):
+                    with patch("os.path.exists", return_value=True):
+                        with patch("os.path.isdir", return_value=True):
+                            with patch.object(dev_code, "_list_dir_children", return_value=children):
+                                with self.assertLogs("dev-code", level="WARNING") as cm:
+                                    dev_code.run_post_launch("/fake.json", "/proj", 300)
+        bad_key_warnings = [line for line in cm.output if "bad_key" in line]
+        self.assertEqual(len(bad_key_warnings), 1, f"Expected 1 warning, got: {bad_key_warnings}")
 
     def test_chown_called_when_owner_and_group_present(self):
         entries = [{"source": "/src", "target": "/tgt",
-                    "owner": "vscode", "group": "vscode", "Override": True}]
+                    "owner": "vscode", "group": "vscode", "override": True}]
         calls = self._run(entries)
         chown_calls = [c for c in calls if "chown" in c]
         self.assertEqual(len(chown_calls), 1)
         self.assertIn("vscode:vscode", chown_calls[0])
 
     def test_chown_skipped_when_group_missing(self):
-        entries = [{"source": "/src", "target": "/tgt", "owner": "vscode", "Override": True}]
+        entries = [{"source": "/src", "target": "/tgt", "owner": "vscode", "override": True}]
         calls = self._run(entries)
         chown_calls = [c for c in calls if "chown" in c]
         self.assertEqual(chown_calls, [])
 
     def test_chmod_called_when_permissions_present(self):
         entries = [{"source": "/src", "target": "/tgt",
-                    "permissions": "0755", "Override": True}]
+                    "permissions": "0755", "override": True}]
         calls = self._run(entries)
         chmod_calls = [c for c in calls if "chmod" in c]
         self.assertEqual(len(chmod_calls), 1)
         self.assertIn("0755", chmod_calls[0])
 
     def test_env_var_substitution_in_source(self):
-        entries = [{"source": "${localEnv:HOME}/.claude", "target": "/tgt", "Override": True}]
+        entries = [{"source": "${localEnv:HOME}/.claude", "target": "/tgt", "override": True}]
         calls = self._run(entries, env={"HOME": "/home/testuser"})
         cp_calls = [c for c in calls if "cp" in c]
         # source should be resolved before reaching docker cp
@@ -490,14 +514,14 @@ class TestRunPostLaunch(unittest.TestCase):
         self.assertEqual(cp_calls, [])
 
     def test_source_not_found_warns_and_skips(self):
-        entries = [{"source": "/nonexistent", "target": "/tgt", "Override": True}]
+        entries = [{"source": "/nonexistent", "target": "/tgt", "override": True}]
         calls = self._run(entries, source_exists=False)
         cp_calls = [c for c in calls if "cp" in c]
         self.assertEqual(cp_calls, [])
 
     def test_relative_source_resolved_from_config_dir(self):
         """Relative source paths are resolved relative to config_file's directory."""
-        entries = [{"source": "claude-config/settings.json", "target": "/tgt", "Override": True}]
+        entries = [{"source": "claude-config/settings.json", "target": "/tgt", "override": True}]
         config = self._make_config(entries)
         cp_calls = []
         def fake_run(cmd, **kw):
@@ -521,7 +545,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_absolute_source_not_modified(self):
         """Absolute source paths are used as-is (not prefixed with config_dir)."""
-        entries = [{"source": "/absolute/path/file.json", "target": "/tgt", "Override": True}]
+        entries = [{"source": "/absolute/path/file.json", "target": "/tgt", "override": True}]
         config = self._make_config(entries)
 
         with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
@@ -538,7 +562,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_file_source_docker_cp_uses_exact_source_path(self):
         """docker cp must receive the actual file path, not a tmpdir."""
-        entries = [{"source": "/src/file.txt", "target": "/home/user/", "Override": True}]
+        entries = [{"source": "/src/file.txt", "target": "/home/user/", "override": True}]
         config = self._make_config(entries)
         cp_calls = []
         def fake_run(cmd, **kw):
@@ -558,7 +582,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_file_source_mkdir_creates_parent_not_target(self):
         """For file source + non-slash target, mkdir -p dirname(target), not target itself."""
-        entries = [{"source": "/src/file.txt", "target": "/home/user/config", "Override": True}]
+        entries = [{"source": "/src/file.txt", "target": "/home/user/config", "override": True}]
         config = self._make_config(entries)
         mkdir_args = []
         def fake_run(cmd, **kw):
@@ -577,7 +601,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_override_check_uses_effective_path_not_raw_target(self):
         """For trailing-slash target, override check is against target/basename, not target/."""
-        entries = [{"source": "/src/file.txt", "target": "/home/user/", "Override": False}]
+        entries = [{"source": "/src/file.txt", "target": "/home/user/", "override": False}]
         config = self._make_config(entries)
         tested_paths = []
         cp_calls = []
@@ -603,7 +627,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_dir_contents_source_expands_to_children(self):
         """source ending with /. expands to individual child entries."""
-        entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "Override": True}]
+        entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "override": True}]
         config = self._make_config(entries)
         cp_calls = []
         def fake_run(cmd, **kw):
@@ -629,7 +653,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_dir_contents_relative_source_expands_to_children(self):
         """Relative source ending with /. expands just like an absolute source."""
-        entries = [{"source": "dotfiles/.", "target": "/home/user/", "Override": True}]
+        entries = [{"source": "dotfiles/.", "target": "/home/user/", "override": True}]
         config = self._make_config(entries)
         cp_calls = []
         def fake_run(cmd, **kw):
@@ -661,7 +685,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_dir_contents_source_without_trailing_slash_target_warns(self):
         """source/. with target not ending in / produces a warning."""
-        entries = [{"source": "/src/dotfiles/.", "target": "/home/user", "Override": True}]
+        entries = [{"source": "/src/dotfiles/.", "target": "/home/user", "override": True}]
         config = self._make_config(entries)
         with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
             with patch.object(dev_code, "wait_for_container", return_value="cid"):
@@ -674,7 +698,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_dir_contents_empty_dir_is_silent_noop(self):
         """source/. with empty dir produces no copies and no warnings."""
-        entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "Override": True}]
+        entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "override": True}]
         config = self._make_config(entries)
         cp_calls = []
         def fake_run(cmd, **kw):
@@ -693,7 +717,7 @@ class TestRunPostLaunch(unittest.TestCase):
     def test_chown_skipped_when_cp_fails(self):
         """chown must not run if docker cp returned non-zero."""
         entries = [{"source": "/src", "target": "/tgt",
-                    "owner": "vscode", "group": "vscode", "Override": True}]
+                    "owner": "vscode", "group": "vscode", "override": True}]
         config = self._make_config(entries)
         def fake_run(cmd, **kw):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":

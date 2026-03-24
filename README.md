@@ -20,6 +20,8 @@
 
 `dev-code` is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting `devcontainer.json`.
 
+Use any template on any project — even repos you don't control or where you'd rather keep the devcontainer out of the repository.
+
 ---
 
 ## Install
@@ -41,6 +43,8 @@ alias dev-code="uvx dev-code"
 ```
 
 > Requires: VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) + Docker
+
+> **Optional:** Install the [`devcontainer` CLI](https://github.com/devcontainers/cli) for automatic resolution of all `devcontainer.json` variables (e.g. `${localEnv:VAR}`). Without it, dev-code uses a Python-based parser that handles `${localEnv:VAR}` only. Install `jq` to improve parsing of `devcontainer.json` files that use comments or non-standard syntax (`jq` does not add variable resolution).
 
 ---
 
@@ -127,7 +131,16 @@ Add a `customizations.dev-code.cp` section to your `devcontainer.json` to copy f
 }
 ```
 
-Supports `owner`, `group`, `permissions`, and `Override` fields per entry. Use `source/.` to copy the contents of a directory.
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `source` | string | required | Host path. Supports `${localEnv:VAR}` and relative paths. Use trailing `/.` to copy directory contents. |
+| `target` | string | required | Container path. Trailing `/` places the source inside the directory. |
+| `override` | bool | `false` | When `true`, overwrite an existing target. When `false` (default), skip if target already exists. |
+| `owner` | string | — | User for `chown -R owner:group` after copy. Both `owner` and `group` must be set; silently skipped if either is omitted. |
+| `group` | string | — | Group for `chown`. Both `owner` and `group` must be set; silently skipped if either is omitted. |
+| `permissions` | string | — | Mode for `chmod -R` after copy (e.g. `"600"`). |
+
+All field names are lowercase.
 
 ---
 

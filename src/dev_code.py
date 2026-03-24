@@ -21,6 +21,8 @@ BANNER = (
     "  project · editor · container — simplified  "
 )
 
+KNOWN_CP_FIELDS = {"source", "target", "override", "owner", "group", "permissions"}
+
 
 def _configure_logging(verbose: bool) -> None:
     """Configure the module logger. Guard prevents double-registration."""
@@ -225,10 +227,9 @@ def _list_dir_children(source_dir: str) -> list:
 
 def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, config_dir: str) -> None:
     """Process a single customizations.dev-code.cp copy entry."""
-    # Warn on wrong-cased Override key
     for key in entry:
-        if key.lower() == "override" and key != "Override":
-            logger.warning("entry %d uses '%s' — use 'Override' (capital O); ignoring", idx, key)
+        if key not in KNOWN_CP_FIELDS:
+            logger.warning("entry %d has unknown field '%s', ignoring", idx, key)
 
     source = entry.get("source")
     target = entry.get("target")
@@ -270,7 +271,7 @@ def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, con
             return
         # Empty dir is a silent no-op
         for child_path in _list_dir_children(actual_dir):
-            child_entry = dict(entry)
+            child_entry = {k: entry[k] for k in KNOWN_CP_FIELDS if k in entry}
             child_entry["source"] = child_path
             child_entry["target"] = target
             _process_entry(container_id, child_entry, cli_used=True, idx=idx, config_dir=config_dir)
@@ -291,14 +292,14 @@ def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, con
         effective = target
 
     # Step 6: Override check (before any side effects)
-    override = entry.get("Override", False)
+    override = entry.get("override", False)
     if not override:
         result = subprocess.run(
             ["docker", "exec", container_id, "test", "-e", effective],
             capture_output=True,
         )
         if result.returncode == 0:
-            logger.info("entry %d effective target '%s' exists and Override=false, skipping", idx, effective)
+            logger.info("entry %d effective target '%s' exists and override=false, skipping", idx, effective)
             return
 
     # Step 7: Pre-create dirs
