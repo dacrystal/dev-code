@@ -18,9 +18,21 @@
 
 **One command. Any project. The right devcontainer.**
 
-`devcode` is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting `devcontainer.json`.
+`devcode` is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting devcontainer configurations.
 
 Use any template on any project — even repos you don't control or where you'd rather keep the devcontainer out of the repository.
+
+```bash
+# Before devcode
+code ~/projects/myhellopy
+# → use Dev Containers extension to configure .devcontainer/
+#   (or copy-paste devcontainer configurations from another project)
+# → "Reopen in Container" → wait for build
+# → remember: don't commit .devcontainer to this repo
+
+# After devcode
+devcode open py-dev ~/projects/myhellopy
+```
 
 ---
 
