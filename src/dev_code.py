@@ -647,10 +647,10 @@ def _template_name_from_config(config_path: str) -> str:
 
 
 def cmd_ps(args) -> None:
-    """List running devcontainers."""
-    fmt = "{{.ID}}\t{{.Label \"devcontainer.local_folder\"}}\t{{.Label \"devcontainer.config_file\"}}\t{{.Status}}"
+    """List devcontainers (running by default; all with -a)."""
+    fmt = "{{.CreatedAt}}\t{{.ID}}\t{{.Label \"devcontainer.local_folder\"}}\t{{.Label \"devcontainer.config_file\"}}\t{{.Status}}"
     result = subprocess.run(
-        ["docker", "container", "ls",
+        ["docker", "container", "ls", "-a",
          "--filter", "label=devcontainer.local_folder",
          "--format", fmt],
         capture_output=True, text=True,
@@ -660,8 +660,20 @@ def cmd_ps(args) -> None:
         sys.exit(1)
 
     rows = [line.split("\t") for line in result.stdout.splitlines() if line.strip()]
+
+    # Sort ascending by CreatedAt (index 0), then drop it
+    rows.sort(key=lambda r: r[0])
+    rows = [r[1:] for r in rows]  # now: [cid, local_folder, config_file, status]
+
+    # Filter: without -a keep only running containers
+    if not args.all:
+        rows = [r for r in rows if len(r) >= 4 and r[3].startswith("Up")]
+
+    # Always drop malformed rows so rows and display stay parallel
+    rows = [r for r in rows if len(r) >= 4]
+
     if not rows:
-        print("no running devcontainers")
+        print("no devcontainers" if args.all else "no running devcontainers")
         return
 
     home = os.path.expanduser("~")
@@ -669,17 +681,14 @@ def cmd_ps(args) -> None:
     def fmt_path(p):
         return "~" + p[len(home):] if p.startswith(home) else p
 
-    # Build display rows
+    # Build display rows: (num, cid, template, path, status)
     display = []
-    for row in rows:
-        if len(row) < 4:
-            continue
+    for i, row in enumerate(rows, 1):
         cid, folder, config, status = row[0], row[1], row[2], row[3]
         template = _template_name_from_config(config) if config else "(unknown)"
-        display.append((cid[:12], template, fmt_path(folder), status))
+        display.append((str(i), cid[:12], template, fmt_path(folder), status))
 
-    # Column widths
-    headers = ("CONTAINER ID", "TEMPLATE", "PROJECT PATH", "STATUS")
+    headers = ("#", "CONTAINER ID", "TEMPLATE", "PROJECT PATH", "STATUS")
     widths = [max(len(h), max((len(r[i]) for r in display), default=0)) for i, h in enumerate(headers)]
 
     def fmt_row(r):
@@ -688,6 +697,59 @@ def cmd_ps(args) -> None:
     print(fmt_row(headers))
     for row in display:
         print(fmt_row(row))
+
+    if not args.interactive:
+        return
+
+    choice = input(f"Open [1-{len(display)}]: ").strip()
+    try:
+        idx = int(choice) - 1
+        if not (0 <= idx < len(display)):
+            raise ValueError
+    except ValueError:
+        print("invalid selection")
+        sys.exit(1)
+
+    # rows[idx] is [cid, local_folder, config_file, status]
+    selected_row = rows[idx]
+    cid_full = selected_row[0]
+    local_folder = selected_row[1]
+    config_file = selected_row[2]
+
+    if not config_file:
+        print("container has no config_file label")
+        sys.exit(1)
+
+    template = _template_name_from_config(config_file)
+    projectpath = local_folder
+
+    # Resolve container_folder from docker inspect mounts
+    container_folder = None
+    inspect = subprocess.run(
+        ["docker", "inspect", cid_full, "--format", "{{json .Mounts}}"],
+        capture_output=True, text=True,
+    )
+    if inspect.returncode == 0:
+        try:
+            mounts = json.loads(inspect.stdout.strip())
+            for m in mounts:
+                if m.get("Type") == "bind" and m.get("Source") == local_folder:
+                    container_folder = m.get("Destination")
+                    break
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    if not container_folder:
+        container_folder = f"/workspaces/{os.path.basename(local_folder)}"
+
+    open_args = argparse.Namespace(
+        template=template,
+        projectpath=projectpath,
+        container_folder=container_folder,
+        timeout=300,
+        dry_run=False,
+    )
+    cmd_open(open_args)
 
 
 _SUBCOMMANDS = ["open", "new", "edit", "init", "list", "ps", "completion"]
@@ -698,7 +760,7 @@ _SUBCOMMAND_FLAGS = {
     "edit": [],
     "init": [],
     "list": ["--long"],
-    "ps": [],
+    "ps": ["-a", "-i"],
     "completion": [],
 }
 
@@ -791,7 +853,9 @@ def main():
     p_list = subparsers.add_parser("list")
     p_list.add_argument("--long", action="store_true")
 
-    subparsers.add_parser("ps")
+    p_ps = subparsers.add_parser("ps")
+    p_ps.add_argument("-a", "--all", action="store_true", dest="all")
+    p_ps.add_argument("-i", "--interactive", action="store_true", dest="interactive")
 
     p_completion = subparsers.add_parser("completion")
     p_completion.add_argument("shell", nargs="?")

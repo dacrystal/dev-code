@@ -17,6 +17,7 @@ spec = importlib.util.spec_from_file_location(
 )
 dev_code = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dev_code)
+sys.modules["dev_code"] = dev_code
 
 
 class TestSmoke(unittest.TestCase):
@@ -965,27 +966,30 @@ class TestTemplateNameFromConfig(unittest.TestCase):
 
 class TestCmdPs(unittest.TestCase):
     def _docker_output(self, rows):
+        # rows: (created_at, cid, local_folder, config_file, status)
         return "\n".join("\t".join(r) for r in rows) + "\n" if rows else ""
 
     def test_lists_containers(self):
-        rows = [("abc123def456", "/home/user/myapp",
+        rows = [("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
                  "/home/user/.local/share/dev-code/templates/claude/.devcontainer/devcontainer.json",
                  "Up 2 hours")]
         mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False)
+            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
                 dev_code.cmd_ps(args)
         combined = "\n".join(lines)
         self.assertIn("claude", combined)
         self.assertIn("abc123def456", combined)
+        self.assertIn("#", combined)   # header row has # column
+        self.assertIn("1", combined)   # row 1
 
     def test_no_containers_message(self):
         mock_result = MagicMock(returncode=0, stdout="")
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False)
+            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
                 dev_code.cmd_ps(args)
         self.assertTrue(any("no running devcontainers" in str(l) for l in lines))
@@ -993,9 +997,205 @@ class TestCmdPs(unittest.TestCase):
     def test_docker_unavailable_exits(self):
         mock_result = MagicMock(returncode=1, stdout="")
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False)
+            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with self.assertRaises(SystemExit):
                 dev_code.cmd_ps(args)
+
+    def test_malformed_row_skipped(self):
+        # A row with fewer than 4 fields after dropping CreatedAt should be skipped silently
+        malformed = "2026-03-24 10:00:00 +0000 UTC\tabc123\t/home/user/myapp"  # only 3 fields after drop
+        good = "2026-03-24 11:00:00 +0000 UTC\tbbb222\t/home/user/other\t/some/config\tUp 1 hour"
+        stdout = malformed + "\n" + good + "\n"
+        mock_result = MagicMock(returncode=0, stdout=stdout)
+        lines = []
+        with patch("subprocess.run", return_value=mock_result):
+            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
+            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                dev_code.cmd_ps(args)  # must not raise
+        combined = "\n".join(lines)
+        self.assertIn("bbb222", combined)  # good row shown
+        self.assertNotIn("abc123", combined)  # malformed row skipped
+
+    def test_all_flag_includes_stopped(self):
+        rows = [
+            ("2026-03-24 09:00:00 +0000 UTC", "aaa111", "/home/user/old",
+             "/home/user/.local/share/dev-code/templates/node/.devcontainer/devcontainer.json",
+             "Exited (0) 1 hour ago"),
+            ("2026-03-24 10:00:00 +0000 UTC", "bbb222", "/home/user/new",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 5 minutes"),
+        ]
+        mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        lines = []
+        with patch("subprocess.run", return_value=mock_result):
+            args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=False)
+            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                dev_code.cmd_ps(args)
+        combined = "\n".join(lines)
+        self.assertIn("aaa111", combined)   # stopped container included
+        self.assertIn("bbb222", combined)   # running container included
+
+    def test_no_all_flag_excludes_stopped(self):
+        rows = [
+            ("2026-03-24 09:00:00 +0000 UTC", "aaa111", "/home/user/old",
+             "/home/user/.local/share/dev-code/templates/node/.devcontainer/devcontainer.json",
+             "Exited (0) 1 hour ago"),
+            ("2026-03-24 10:00:00 +0000 UTC", "bbb222", "/home/user/new",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 5 minutes"),
+        ]
+        mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        lines = []
+        with patch("subprocess.run", return_value=mock_result):
+            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
+            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                dev_code.cmd_ps(args)
+        combined = "\n".join(lines)
+        self.assertNotIn("aaa111", combined)   # stopped excluded
+        self.assertIn("bbb222", combined)      # running shown
+
+    def test_all_flag_empty_message(self):
+        mock_result = MagicMock(returncode=0, stdout="")
+        lines = []
+        with patch("subprocess.run", return_value=mock_result):
+            args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=False)
+            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                dev_code.cmd_ps(args)
+        self.assertTrue(any("no devcontainers" in str(l) and "running" not in str(l) for l in lines))
+
+    def test_interactive_valid_selection_calls_cmd_open(self):
+        rows = [
+            ("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 2 hours"),
+        ]
+        ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        inspect_result = MagicMock(
+            returncode=0,
+            stdout='[{"Type":"bind","Source":"/home/user/myapp","Destination":"/workspaces/myapp"}]'
+        )
+        with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
+            with patch("builtins.input", return_value="1"):
+                with patch("dev_code.cmd_open") as mock_open:
+                    args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
+                    dev_code.cmd_ps(args)
+        mock_open.assert_called_once()
+        call_args = mock_open.call_args[0][0]
+        self.assertEqual(call_args.template, "python")
+        self.assertEqual(call_args.projectpath, "/home/user/myapp")
+        self.assertEqual(call_args.container_folder, "/workspaces/myapp")
+        self.assertEqual(call_args.timeout, 300)
+        self.assertFalse(call_args.dry_run)
+
+    def test_interactive_mount_fallback(self):
+        rows = [
+            ("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 2 hours"),
+        ]
+        ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        # No matching mount — inspect returns unrelated mount
+        inspect_result = MagicMock(
+            returncode=0,
+            stdout='[{"Type":"bind","Source":"/other/path","Destination":"/workspace/other"}]'
+        )
+        with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
+            with patch("builtins.input", return_value="1"):
+                with patch("dev_code.cmd_open") as mock_open:
+                    args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
+                    dev_code.cmd_ps(args)
+        call_args = mock_open.call_args[0][0]
+        self.assertEqual(call_args.container_folder, "/workspaces/myapp")  # fallback
+
+    def test_interactive_invalid_selection_exits(self):
+        rows = [
+            ("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 2 hours"),
+        ]
+        ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        with patch("subprocess.run", return_value=ls_result):
+            with patch("builtins.input", return_value="99"):
+                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
+                with self.assertRaises(SystemExit):
+                    dev_code.cmd_ps(args)
+
+    def test_interactive_non_integer_exits(self):
+        rows = [
+            ("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 2 hours"),
+        ]
+        ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        with patch("subprocess.run", return_value=ls_result):
+            with patch("builtins.input", return_value="abc"):
+                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
+                with self.assertRaises(SystemExit):
+                    dev_code.cmd_ps(args)
+
+    def test_interactive_missing_config_label_exits(self):
+        rows = [
+            ("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
+             "",   # empty config_file label
+             "Up 2 hours"),
+        ]
+        ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        with patch("subprocess.run", return_value=ls_result):
+            with patch("builtins.input", return_value="1"):
+                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
+                with self.assertRaises(SystemExit):
+                    dev_code.cmd_ps(args)
+
+    def test_interactive_empty_table_no_prompt(self):
+        ls_result = MagicMock(returncode=0, stdout="")
+        prompted = []
+        with patch("subprocess.run", return_value=ls_result):
+            with patch("builtins.input", side_effect=lambda _: prompted.append(True) or "1"):
+                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
+                dev_code.cmd_ps(args)
+        self.assertEqual(prompted, [])   # input() was never called
+
+    def test_interactive_all_with_malformed_row_correct_selection(self):
+        # With -a -i, a malformed row must not shift the index of a good row
+        malformed = "2026-03-24 08:00:00 +0000 UTC\tbad_id\t/home/user/bad"  # 3 fields after drop
+        good = "2026-03-24 10:00:00 +0000 UTC\tgood111\t/home/user/myapp\t/path/to/python/config\tExited (0) 1 hour ago"
+        stdout = malformed + "\n" + good + "\n"
+        ls_result = MagicMock(returncode=0, stdout=stdout)
+        inspect_result = MagicMock(returncode=0, stdout='[]')
+        with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
+            with patch("builtins.input", return_value="1"):
+                with patch("dev_code.cmd_open") as mock_open:
+                    args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=True)
+                    dev_code.cmd_ps(args)
+        mock_open.assert_called_once()
+        call_args = mock_open.call_args[0][0]
+        self.assertEqual(call_args.projectpath, "/home/user/myapp")  # good row, not malformed
+
+    def test_sort_ascending_by_created_at(self):
+        # Docker returns rows newest-first; cmd_ps must reorder oldest-first
+        rows = [
+            ("2026-03-24 12:00:00 +0000 UTC", "newer111", "/home/user/newer",
+             "/home/user/.local/share/dev-code/templates/node/.devcontainer/devcontainer.json",
+             "Up 1 minute"),
+            ("2026-03-24 08:00:00 +0000 UTC", "older222", "/home/user/older",
+             "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+             "Up 4 hours"),
+        ]
+        mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        lines = []
+        with patch("subprocess.run", return_value=mock_result):
+            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
+            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                dev_code.cmd_ps(args)
+        # Find data rows (skip header)
+        data_rows = [l for l in lines if "older222" in l or "newer111" in l]
+        self.assertEqual(len(data_rows), 2)
+        # older222 must appear before newer111
+        idx_older = next(i for i, l in enumerate(lines) if "older222" in l)
+        idx_newer = next(i for i, l in enumerate(lines) if "newer111" in l)
+        self.assertLess(idx_older, idx_newer)
+        # older222 must be row #1
+        self.assertIn("1", lines[idx_older])
 
 
 class TestCmdOpenDryRun(unittest.TestCase):
@@ -1244,6 +1444,11 @@ class TestCmdComplete(unittest.TestCase):
     def test_ps_returns_empty(self):
         result = self._run(2, ["dev-code", "ps", ""])
         self.assertEqual(result, [])
+
+    def test_ps_flags_completion(self):
+        result = self._run(2, ["dev-code", "ps", "-"])
+        self.assertIn("-a", result)
+        self.assertIn("-i", result)
 
     def test_completion_index2_returns_shells(self):
         result = self._run(2, ["dev-code", "completion", ""])
