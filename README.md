@@ -48,6 +48,34 @@ alias dev-code="uvx dev-code"
 
 ---
 
+## Shell Completion
+
+Add tab-completion for `dev-code` subcommands, template names, and flags.
+
+### Bash
+
+Add to `~/.bashrc`:
+
+```bash
+eval "$(dev-code completion bash)"
+```
+
+> Requires bash 4.0+. macOS ships bash 3.2 — install bash 5 via Homebrew first.
+
+### Zsh
+
+Add to `~/.zshrc` **after** `compinit`:
+
+```zsh
+eval "$(dev-code completion zsh)"
+```
+
+Completes subcommand names, template names (for `open`, `new`, `edit`), flags, and shell names.
+
+> **Note:** Shell completion requires `dev-code` to be on your `PATH` as a real executable (e.g. `pip install dev-code`). It will not work if you are using the `alias dev-code="uvx dev-code"` shortcut, because shell completion scripts call `dev-code` as a subprocess and aliases are not visible to subprocesses.
+
+---
+
 ## Quick-start
 
 ```bash
@@ -85,6 +113,7 @@ dev-code open dev-code ~/projects/my-app
 | `dev-code edit [template]` | Open a template for editing in VS Code |
 | `dev-code list [--long]` | List available templates |
 | `dev-code ps` | Show running devcontainers |
+| `dev-code completion <shell>` | Print shell completion script (`bash` or `zsh`) |
 
 ### Options
 

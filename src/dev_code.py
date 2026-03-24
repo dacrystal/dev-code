@@ -23,6 +23,37 @@ BANNER = (
 
 KNOWN_CP_FIELDS = {"source", "target", "override", "owner", "group", "permissions"}
 
+_BASH_COMPLETION = """\
+# dev-code bash completion
+# Requires bash 4.0+ (macOS ships bash 3.2; install bash 5 via Homebrew if needed).
+_dev_code() {
+    local -a candidates
+    mapfile -t candidates < <(dev-code completion --complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        local cur="${COMP_WORDS[COMP_CWORD]}"
+        mapfile -t COMPREPLY < <(compgen -f -- "$cur")
+    else
+        COMPREPLY=("${candidates[@]}")
+    fi
+}
+complete -F _dev_code dev-code
+"""
+
+_ZSH_COMPLETION = """\
+# dev-code zsh completion
+_dev_code() {
+    local candidates
+    candidates=$(dev-code completion --complete "$(( CURRENT - 1 ))" "${words[@]}" 2>/dev/null)
+    if [[ -z "$candidates" ]]; then
+        _files
+    else
+        compadd -- ${(f)candidates}
+    fi
+}
+# Note: compdef requires compinit to have been called first.
+compdef _dev_code dev-code
+"""
+
 
 def _configure_logging(verbose: bool) -> None:
     """Configure the module logger. Guard prevents double-registration."""
@@ -64,6 +95,29 @@ def resolve_template_dir() -> str:
         return override
     xdg = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share"))
     return os.path.join(xdg, "dev-code", "templates")
+
+
+def _list_template_names() -> list:
+    """Return sorted deduplicated list of all template names (builtins + user)."""
+    names = set()
+    try:
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        builtin_base = os.path.join(module_dir, "dev_code_templates")
+        if os.path.isdir(builtin_base):
+            for name in os.listdir(builtin_base):
+                if os.path.isdir(os.path.join(builtin_base, name)):
+                    names.add(name)
+    except Exception:
+        pass
+    try:
+        user_dir = resolve_template_dir()
+        if os.path.isdir(user_dir):
+            for name in os.listdir(user_dir):
+                if os.path.isdir(os.path.join(user_dir, name)):
+                    names.add(name)
+    except Exception:
+        pass
+    return sorted(names)
 
 
 def get_builtin_template_path(name: str) -> str | None:
@@ -636,16 +690,84 @@ def cmd_ps(args) -> None:
         print(fmt_row(row))
 
 
-class _BannerFormatter(argparse.RawDescriptionHelpFormatter):
+_SUBCOMMANDS = ["open", "new", "edit", "init", "list", "ps", "completion"]
+
+_SUBCOMMAND_FLAGS = {
+    "open": ["--dry-run", "--container-folder", "--timeout"],
+    "new": ["--edit"],
+    "edit": [],
+    "init": [],
+    "list": ["--long"],
+    "ps": [],
+    "completion": [],
+}
+
+
+def cmd_completion(args) -> None:
+    """completion subcommand: print shell completion script or candidates to stdout."""
+    if args.complete_words is not None:
+        # Internal path: called by the shell completion scripts.
+        # Always exits 0; prints nothing on any error.
+        try:
+            words = args.complete_words
+            if not words:
+                sys.exit(0)
+            try:
+                cword_index = int(words[0])
+            except ValueError:
+                sys.exit(0)
+            words = words[1:]
+
+            if not (0 <= cword_index < len(words)):
+                sys.exit(0)
+
+            current_word = words[cword_index]
+
+            if cword_index == 1:
+                candidates = _SUBCOMMANDS
+            else:
+                subcommand = words[1] if len(words) > 1 else ""
+                if subcommand == "list":
+                    candidates = ["--long"]
+                elif subcommand == "completion":
+                    candidates = ["bash", "zsh"] if cword_index == 2 else []
+                elif current_word.startswith("-"):
+                    candidates = _SUBCOMMAND_FLAGS.get(subcommand, [])
+                else:
+                    if subcommand == "open" and cword_index == 2:
+                        candidates = _list_template_names()
+                    elif subcommand == "new" and cword_index == 3:
+                        candidates = _list_template_names()
+                    elif subcommand == "edit" and cword_index == 2:
+                        candidates = _list_template_names()
+                    else:
+                        candidates = []
+
+            for c in candidates:
+                if c.startswith(current_word):
+                    print(c)
+        except Exception:
+            pass
+        sys.exit(0)
+
+    if args.shell == "bash":
+        print(_BASH_COMPLETION, end="")
+    elif args.shell == "zsh":
+        print(_ZSH_COMPLETION, end="")
+    else:
+        logger.error("unknown shell %r: supported shells are bash and zsh", args.shell)
+        sys.exit(1)
+
+
+class _BannerParser(argparse.ArgumentParser):
+    """ArgumentParser that shows the banner only in full --help output, not in error usage lines."""
+
     def format_help(self):
         return BANNER + "\n\n" + super().format_help()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="dev-code",
-        formatter_class=_BannerFormatter,
-    )
+    parser = _BannerParser(prog="dev-code")
     parser.add_argument("-v", "--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="subcommand")
 
@@ -671,6 +793,10 @@ def main():
 
     subparsers.add_parser("ps")
 
+    p_completion = subparsers.add_parser("completion")
+    p_completion.add_argument("shell", nargs="?")
+    p_completion.add_argument("--complete", nargs="*", dest="complete_words", help=argparse.SUPPRESS)
+
     args = parser.parse_args()
     if args.subcommand is None:
         parser.print_help()
@@ -684,6 +810,7 @@ def main():
         "init": cmd_init,
         "list": cmd_list,
         "ps": cmd_ps,
+        "completion": cmd_completion,
     }
     dispatch[args.subcommand](args)
 

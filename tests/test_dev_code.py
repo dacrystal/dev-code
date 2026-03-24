@@ -1,5 +1,6 @@
 import argparse
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -1096,3 +1097,234 @@ class TestBanner(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("project · editor · container — simplified", result.stdout)
+
+
+class TestListTemplateNames(unittest.TestCase):
+    def _make_dirs(self, base, *names):
+        for name in names:
+            os.makedirs(os.path.join(base, name), exist_ok=True)
+
+    def test_returns_user_templates(self):
+        with tempfile.TemporaryDirectory() as user_dir:
+            self._make_dirs(user_dir, "alpha", "beta")
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
+                names = dev_code._list_template_names()
+        self.assertIn("alpha", names)
+        self.assertIn("beta", names)
+
+    def test_returns_builtin_templates(self):
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            builtin_base = os.path.join(pkg_dir, "dev_code_templates", "dev-code")
+            os.makedirs(builtin_base)
+            with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": "/nonexistent_xyz"}):
+                    names = dev_code._list_template_names()
+        self.assertIn("dev-code", names)
+
+    def test_deduplicates_same_name(self):
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            with tempfile.TemporaryDirectory() as user_dir:
+                os.makedirs(os.path.join(pkg_dir, "dev_code_templates", "shared"))
+                os.makedirs(os.path.join(user_dir, "shared"))
+                with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                    with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
+                        names = dev_code._list_template_names()
+        self.assertEqual(names.count("shared"), 1)
+
+    def test_returns_sorted(self):
+        with tempfile.TemporaryDirectory() as user_dir:
+            self._make_dirs(user_dir, "zebra", "alpha", "mango")
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
+                names = dev_code._list_template_names()
+        subset = [n for n in names if n in ("zebra", "alpha", "mango")]
+        self.assertEqual(subset, sorted(subset))
+
+    def test_returns_empty_on_missing_dirs(self):
+        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": "/totally_nonexistent_xyz"}):
+            with patch.object(dev_code, "__file__", "/nonexistent/dev_code.py"):
+                names = dev_code._list_template_names()
+        self.assertEqual(names, [])
+
+class TestCmdComplete(unittest.TestCase):
+    def _run(self, cword_index, words, template_names=None):
+        """Run cmd_completion --complete path, capture printed lines, assert exit code 0."""
+        if template_names is None:
+            template_names = []
+        # --complete receives [cword_index_str, *words] as complete_words
+        args = argparse.Namespace(complete_words=[str(cword_index)] + words, shell=None)
+        captured = []
+        with patch.object(dev_code, "_list_template_names", return_value=template_names):
+            with patch("builtins.print", side_effect=lambda x: captured.append(x)):
+                with self.assertRaises(SystemExit) as cm:
+                    dev_code.cmd_completion(args)
+        self.assertEqual(cm.exception.code, 0)
+        return captured
+
+    def test_completing_subcommand_returns_all_subcommands(self):
+        result = self._run(1, ["dev-code", ""])
+        for sub in ("open", "new", "edit", "init", "list", "ps", "completion"):
+            self.assertIn(sub, result)
+
+    def test_prefix_filters_subcommands(self):
+        result = self._run(1, ["dev-code", "op"])
+        self.assertEqual(result, ["open"])
+
+    def test_open_index2_returns_template_names(self):
+        result = self._run(2, ["dev-code", "open", ""], template_names=["alpha", "beta"])
+        self.assertIn("alpha", result)
+        self.assertIn("beta", result)
+
+    def test_open_index2_prefix_filters_templates(self):
+        result = self._run(2, ["dev-code", "open", "al"], template_names=["alpha", "beta"])
+        self.assertEqual(result, ["alpha"])
+
+    def test_open_index3_returns_empty(self):
+        result = self._run(3, ["dev-code", "open", "mytemplate", ""])
+        self.assertEqual(result, [])
+
+    def test_open_index4_returns_empty(self):
+        result = self._run(4, ["dev-code", "open", "mytemplate", "/path", ""])
+        self.assertEqual(result, [])
+
+    def test_open_flag_completion_at_index3(self):
+        result = self._run(3, ["dev-code", "open", "mytemplate", "--"])
+        self.assertIn("--dry-run", result)
+        self.assertIn("--container-folder", result)
+        self.assertIn("--timeout", result)
+
+    def test_open_flag_completion_at_index2(self):
+        result = self._run(2, ["dev-code", "open", "--"])
+        self.assertIn("--dry-run", result)
+
+    def test_new_index2_returns_empty(self):
+        result = self._run(2, ["dev-code", "new", ""])
+        self.assertEqual(result, [])
+
+    def test_new_index3_returns_template_names(self):
+        result = self._run(3, ["dev-code", "new", "myname", ""], template_names=["base1"])
+        self.assertIn("base1", result)
+
+    def test_new_flag_completion(self):
+        result = self._run(2, ["dev-code", "new", "--"])
+        self.assertEqual(result, ["--edit"])
+
+    def test_edit_index2_returns_template_names(self):
+        result = self._run(2, ["dev-code", "edit", ""], template_names=["mytemplate"])
+        self.assertIn("mytemplate", result)
+
+    def test_edit_index3_returns_empty(self):
+        result = self._run(3, ["dev-code", "edit", "mytemplate", ""])
+        self.assertEqual(result, [])
+
+    def test_edit_flag_returns_empty(self):
+        result = self._run(2, ["dev-code", "edit", "--"])
+        self.assertEqual(result, [])
+
+    def test_list_index2_returns_long(self):
+        result = self._run(2, ["dev-code", "list", ""])
+        self.assertEqual(result, ["--long"])
+
+    def test_list_higher_index_returns_long(self):
+        result = self._run(3, ["dev-code", "list", "--long", ""])
+        self.assertEqual(result, ["--long"])
+
+    def test_list_prefix_filter_long(self):
+        result = self._run(2, ["dev-code", "list", "--l"])
+        self.assertEqual(result, ["--long"])
+
+    def test_list_partial_word_no_match_returns_empty(self):
+        # list branch fires unconditionally; prefix filter removes --long when current_word="x"
+        result = self._run(2, ["dev-code", "list", "x"])
+        self.assertEqual(result, [])
+
+    def test_init_returns_empty(self):
+        result = self._run(2, ["dev-code", "init", ""])
+        self.assertEqual(result, [])
+
+    def test_ps_returns_empty(self):
+        result = self._run(2, ["dev-code", "ps", ""])
+        self.assertEqual(result, [])
+
+    def test_completion_index2_returns_shells(self):
+        result = self._run(2, ["dev-code", "completion", ""])
+        self.assertIn("bash", result)
+        self.assertIn("zsh", result)
+
+    def test_completion_index2_prefix_filter(self):
+        result = self._run(2, ["dev-code", "completion", "b"])
+        self.assertEqual(result, ["bash"])
+
+    def test_completion_index3_returns_empty(self):
+        result = self._run(3, ["dev-code", "completion", "bash", ""])
+        self.assertEqual(result, [])
+
+    def test_empty_complete_words_exits_zero_no_output(self):
+        args = argparse.Namespace(complete_words=[], shell=None)
+        captured = []
+        with patch("builtins.print", side_effect=lambda x: captured.append(x)):
+            with self.assertRaises(SystemExit) as cm:
+                dev_code.cmd_completion(args)
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(captured, [])
+
+    def test_non_integer_cword_exits_zero_no_output(self):
+        args = argparse.Namespace(complete_words=["notanint", "dev-code", "open"], shell=None)
+        captured = []
+        with patch("builtins.print", side_effect=lambda x: captured.append(x)):
+            with self.assertRaises(SystemExit) as cm:
+                dev_code.cmd_completion(args)
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(captured, [])
+
+    def test_out_of_range_cword_exits_zero_no_output(self):
+        args = argparse.Namespace(complete_words=["5", "dev-code", "open"], shell=None)
+        captured = []
+        with patch("builtins.print", side_effect=lambda x: captured.append(x)):
+            with self.assertRaises(SystemExit) as cm:
+                dev_code.cmd_completion(args)
+        self.assertEqual(cm.exception.code, 0)
+        self.assertEqual(captured, [])
+
+    def test_cword_index0_returns_empty(self):
+        # index 0 is the command name slot — nothing to complete
+        result = self._run(0, ["dev-code"])
+        self.assertEqual(result, [])
+
+
+class TestCmdCompletion(unittest.TestCase):
+    def _capture(self, shell):
+        args = argparse.Namespace(shell=shell, complete_words=None)
+        buf = io.StringIO()
+        with patch("builtins.print", side_effect=lambda *a, **kw: buf.write(a[0] if a else "")):
+            dev_code.cmd_completion(args)
+        return buf.getvalue()
+
+    def test_bash_contains_function_name(self):
+        output = self._capture("bash")
+        self.assertIn("_dev_code", output)
+
+    def test_bash_contains_complete_registration(self):
+        output = self._capture("bash")
+        self.assertIn("complete -F", output)
+
+    def test_bash_contains_mapfile(self):
+        output = self._capture("bash")
+        self.assertIn("mapfile", output)
+
+    def test_zsh_contains_function_name(self):
+        output = self._capture("zsh")
+        self.assertIn("_dev_code", output)
+
+    def test_zsh_contains_compdef(self):
+        output = self._capture("zsh")
+        self.assertIn("compdef", output)
+
+    def test_zsh_contains_compinit_warning(self):
+        output = self._capture("zsh")
+        self.assertIn("compinit", output)
+
+    def test_unknown_shell_exits_1(self):
+        args = argparse.Namespace(shell="fish", complete_words=None)
+        with self.assertRaises(SystemExit) as cm:
+            dev_code.cmd_completion(args)
+        self.assertEqual(cm.exception.code, 1)
