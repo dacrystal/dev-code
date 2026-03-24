@@ -7,18 +7,29 @@
  / _` |/ _ \ \ / /______/ __/ _ \ / _` |/ _ \
 | (_| |  __/\ V /      | (_| (_) | (_| |  __/
  \__,_|\___| \_/        \___\___/ \__,_|\___|
-  project · editor · container — simplified
+  project · editor · container — simplified  
+
+usage: devcode [-h] [-v] {open,new,edit,init,list,ps,completion} ...
+
+positional arguments:
+  {open,new,edit,init,list,ps,completion}
+
+options:
+  -h, --help            show this help message and exit
+  -v, --verbose
+
 ```
 
-[![Coverage](https://codecov.io/gh/dacrystal/dev-code/branch/main/graph/badge.svg)](https://codecov.io/gh/dacrystal/dev-code)
 
+[![Coverage](https://codecov.io/gh/dacrystal/dev-code/branch/main/graph/badge.svg)](https://codecov.io/gh/dacrystal/dev-code)
 [![PyPI version](https://img.shields.io/pypi/v/dev-code)](https://pypi.org/project/dev-code/)
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/dev-code)](https://pypi.org/project/dev-code/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**One command. Any project. The right devcontainer.**
 
-`devcode` is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting devcontainer configurations.
+*One command. Any project. The right devcontainer.*
+
+Devcode is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting devcontainer configurations.
 
 Use any template on any project — even repos you don't control or where you'd rather keep the devcontainer out of the repository.
 
