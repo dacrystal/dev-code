@@ -18,7 +18,7 @@
 
 **One command. Any project. The right devcontainer.**
 
-`dev-code` is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting `devcontainer.json`.
+`devcode` is a CLI that opens any project in VS Code inside a devcontainer — instantly, using reusable templates you define once. No more hunting config files. No more copy-pasting `devcontainer.json`.
 
 Use any template on any project — even repos you don't control or where you'd rather keep the devcontainer out of the repository.
 
@@ -33,31 +33,31 @@ pip install dev-code
 Or run without installing via **uvx**:
 
 ```bash
-uvx dev-code
+uvx --from dev-code devcode
 ```
 
 **Tip:** Add an alias for the fastest workflow:
 
 ```bash
-alias dev-code="uvx dev-code"
+alias devcode="uvx --from dev-code devcode"
 ```
 
 > Requires: VS Code with the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) + Docker
 
-> **Optional:** Install the [`devcontainer` CLI](https://github.com/devcontainers/cli) for automatic resolution of all `devcontainer.json` variables (e.g. `${localEnv:VAR}`). Without it, dev-code uses a Python-based parser that handles `${localEnv:VAR}` only. Install `jq` to improve parsing of `devcontainer.json` files that use comments or non-standard syntax (`jq` does not add variable resolution).
+> **Optional:** Install the [`devcontainer` CLI](https://github.com/devcontainers/cli) for automatic resolution of all `devcontainer.json` variables (e.g. `${localEnv:VAR}`). Without it, devcode uses a Python-based parser that handles `${localEnv:VAR}` only. Install `jq` to improve parsing of `devcontainer.json` files that use comments or non-standard syntax (`jq` does not add variable resolution).
 
 ---
 
 ## Shell Completion
 
-Add tab-completion for `dev-code` subcommands, template names, and flags.
+Add tab-completion for `devcode` subcommands, template names, and flags.
 
 ### Bash
 
 Add to `~/.bashrc`:
 
 ```bash
-eval "$(dev-code completion bash)"
+eval "$(devcode completion bash)"
 ```
 
 > Requires bash 4.0+. macOS ships bash 3.2 — install bash 5 via Homebrew first.
@@ -67,12 +67,12 @@ eval "$(dev-code completion bash)"
 Add to `~/.zshrc` **after** `compinit`:
 
 ```zsh
-eval "$(dev-code completion zsh)"
+eval "$(devcode completion zsh)"
 ```
 
 Completes subcommand names, template names (for `open`, `new`, `edit`), flags, and shell names.
 
-> **Note:** Shell completion requires `dev-code` to be on your `PATH` as a real executable (e.g. `pip install dev-code`). It will not work if you are using the `alias dev-code="uvx dev-code"` shortcut, because shell completion scripts call `dev-code` as a subprocess and aliases are not visible to subprocesses.
+> **Note:** Shell completion requires `devcode` to be on your `PATH` as a real executable (e.g. `pip install dev-code`). It will not work if you are using the `alias devcode="uvx --from dev-code devcode"` shortcut, because shell completion scripts call `devcode` as a subprocess and aliases are not visible to subprocesses.
 
 ---
 
@@ -80,10 +80,10 @@ Completes subcommand names, template names (for `open`, `new`, `edit`), flags, a
 
 ```bash
 # 1. Seed your first template
-dev-code init
+devcode init
 
 # 2. Open any project in a devcontainer
-dev-code open dev-code ~/projects/my-app
+devcode open dev-code ~/projects/my-app
 
 # That's it. VS Code opens, container spins up.
 ```
@@ -92,13 +92,13 @@ dev-code open dev-code ~/projects/my-app
 
 ## Features
 
-- **One-command open** — `dev-code open <template> <path>` launches VS Code in a devcontainer instantly
+- **One-command open** — `devcode open <template> <path>` launches VS Code in a devcontainer instantly
 - **Reusable templates** — define your devcontainer once, reuse it across every project
 - **Built-in template** — ships with the `dev-code` template out of the box
-- **Custom templates** — create and manage your own with `dev-code new`
+- **Custom templates** — create and manage your own with `devcode new`
 - **File sync on launch** — copy credentials, configs, and secrets into the container via a `dev-code` customization block in `devcontainer.json`
 - **WSL support** — works natively on Windows Subsystem for Linux
-- **Container dashboard** — see all running devcontainers with `dev-code ps`
+- **Container dashboard** — see all running devcontainers with `devcode ps`
 - **Works with existing config** — no new format, just standard `devcontainer.json`
 
 ---
@@ -107,13 +107,13 @@ dev-code open dev-code ~/projects/my-app
 
 | Command | Description |
 |---|---|
-| `dev-code init` | Seed the built-in `dev-code` template into your template directory |
-| `dev-code open <template> <path>` | Open a project in VS Code using a devcontainer template |
-| `dev-code new <name> [base]` | Create a new template (optionally based on an existing one) |
-| `dev-code edit [template]` | Open a template for editing in VS Code |
-| `dev-code list [--long]` | List available templates |
-| `dev-code ps` | Show running devcontainers |
-| `dev-code completion <shell>` | Print shell completion script (`bash` or `zsh`) |
+| `devcode init` | Seed the built-in `dev-code` template into your template directory |
+| `devcode open <template> <path>` | Open a project in VS Code using a devcontainer template |
+| `devcode new <name> [base]` | Create a new template (optionally based on an existing one) |
+| `devcode edit [template]` | Open a template for editing in VS Code |
+| `devcode list [--long]` | List available templates |
+| `devcode ps` | Show running devcontainers |
+| `devcode completion <shell>` | Print shell completion script (`bash` or `zsh`) |
 
 ### Options
 
@@ -135,10 +135,10 @@ Templates are directories containing a `.devcontainer/devcontainer.json` file. T
 ### Get started
 
 ```bash
-dev-code init                  # copies the built-in dev-code template
-dev-code new my-python         # creates a new template from the default base
-dev-code new my-node dev-code  # creates a new template based on dev-code
-dev-code edit my-python        # open the template in VS Code to customise it
+devcode init                  # copies the built-in dev-code template
+devcode new my-python         # creates a new template from the default base
+devcode new my-node dev-code  # creates a new template based on dev-code
+devcode edit my-python        # open the template in VS Code to customise it
 ```
 
 ### File sync — copy files into the container on launch
@@ -179,7 +179,7 @@ Contributions are welcome! To get started:
 
 ```bash
 git clone https://github.com/dacrystal/dev-code
-dev-code open dev-code ./dev-code
+devcode open dev-code ./dev-code
 ```
 
 The repo includes a `dev-code` devcontainer — open it with itself.

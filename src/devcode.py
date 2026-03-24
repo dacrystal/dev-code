@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-logger = logging.getLogger("dev-code")
+logger = logging.getLogger("devcode")
 
 BANNER = (
     "     _                                _\n"
@@ -24,11 +24,11 @@ BANNER = (
 KNOWN_CP_FIELDS = {"source", "target", "override", "owner", "group", "permissions"}
 
 _BASH_COMPLETION = """\
-# dev-code bash completion
+# devcode bash completion
 # Requires bash 4.0+ (macOS ships bash 3.2; install bash 5 via Homebrew if needed).
 _dev_code() {
     local -a candidates
-    mapfile -t candidates < <(dev-code completion --complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)
+    mapfile -t candidates < <(devcode completion --complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)
     if [[ ${#candidates[@]} -eq 0 ]]; then
         local cur="${COMP_WORDS[COMP_CWORD]}"
         mapfile -t COMPREPLY < <(compgen -f -- "$cur")
@@ -36,14 +36,14 @@ _dev_code() {
         COMPREPLY=("${candidates[@]}")
     fi
 }
-complete -F _dev_code dev-code
+complete -F _dev_code devcode
 """
 
 _ZSH_COMPLETION = """\
-# dev-code zsh completion
+# devcode zsh completion
 _dev_code() {
     local candidates
-    candidates=$(dev-code completion --complete "$(( CURRENT - 1 ))" "${words[@]}" 2>/dev/null)
+    candidates=$(devcode completion --complete "$(( CURRENT - 1 ))" "${words[@]}" 2>/dev/null)
     if [[ -z "$candidates" ]]; then
         _files
     else
@@ -51,7 +51,7 @@ _dev_code() {
     fi
 }
 # Note: compdef requires compinit to have been called first.
-compdef _dev_code dev-code
+compdef _dev_code devcode
 """
 
 
@@ -535,7 +535,7 @@ def cmd_edit(args) -> None:
 
     if args.template is None:
         if not os.path.isdir(template_dir):
-            logger.error("template dir not found: %s — run 'dev-code init' first", template_dir)
+            logger.error("template dir not found: %s — run 'devcode init' first", template_dir)
             sys.exit(1)
         project_path = template_dir
     else:
@@ -610,9 +610,9 @@ def cmd_list(args) -> None:
         for name, _ in user:
             print(name)
         if not user and not builtins:
-            print("(no templates — run 'dev-code init' to get started)")
+            print("(no templates — run 'devcode init' to get started)")
         elif not user:
-            print("(no user templates — run 'dev-code init' to get started)")
+            print("(no user templates — run 'devcode init' to get started)")
         return
 
     # --long output
@@ -633,7 +633,7 @@ def cmd_list(args) -> None:
         for name, path in user:
             print(f"  {name:<{col_w}}{path}")
     else:
-        print("  (no user templates — run 'dev-code init' to get started)")
+        print("  (no user templates — run 'devcode init' to get started)")
 
 
 def _template_name_from_config(config_path: str) -> str:
@@ -829,7 +829,7 @@ class _BannerParser(argparse.ArgumentParser):
 
 
 def main():
-    parser = _BannerParser(prog="dev-code")
+    parser = _BannerParser(prog="devcode")
     parser.add_argument("-v", "--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="subcommand")
 

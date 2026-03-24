@@ -10,27 +10,27 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-# Load src/dev_code.py as a module
+# Load src/devcode.py as a module
 spec = importlib.util.spec_from_file_location(
     "dev_code",
-    os.path.join(os.path.dirname(__file__), "..", "src", "dev_code.py"),
+    os.path.join(os.path.dirname(__file__), "..", "src", "devcode.py"),
 )
-dev_code = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(dev_code)
-sys.modules["dev_code"] = dev_code
+devcode = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(devcode)
+sys.modules["devcode"] = devcode
 
 
 class TestSmoke(unittest.TestCase):
     def test_existing_helpers_present(self):
-        assert callable(dev_code.is_wsl)
-        assert callable(dev_code.wsl_to_windows)
-        assert callable(dev_code.build_devcontainer_uri)
-        assert callable(dev_code.resolve_template_dir)
-        assert callable(dev_code.resolve_template)
+        assert callable(devcode.is_wsl)
+        assert callable(devcode.wsl_to_windows)
+        assert callable(devcode.build_devcontainer_uri)
+        assert callable(devcode.resolve_template_dir)
+        assert callable(devcode.resolve_template)
 
     def test_banner_is_string(self):
-        assert isinstance(dev_code.BANNER, str)
-        assert len(dev_code.BANNER) > 0
+        assert isinstance(devcode.BANNER, str)
+        assert len(devcode.BANNER) > 0
 
 
 class TestParseDevcontainerJson(unittest.TestCase):
@@ -44,39 +44,39 @@ class TestParseDevcontainerJson(unittest.TestCase):
 
     def test_fallback_plain_json(self):
         path = self._write_json('{"name": "Dev"}')
-        data, cli_used = dev_code.parse_devcontainer_json(path)
+        data, cli_used = devcode.parse_devcontainer_json(path)
         self.assertEqual(data["name"], "Dev")
         self.assertFalse(cli_used)
 
     def test_fallback_strips_line_comments(self):
         content = '// top comment\n{"name": "Dev"}'
         path = self._write_json(content)
-        data, cli_used = dev_code.parse_devcontainer_json(path)
+        data, cli_used = devcode.parse_devcontainer_json(path)
         self.assertEqual(data["name"], "Dev")
 
     def test_fallback_strips_trailing_commas(self):
         content = '{"features": {"uv": {},}}'
         path = self._write_json(content)
-        data, _ = dev_code.parse_devcontainer_json(path)
+        data, _ = devcode.parse_devcontainer_json(path)
         self.assertIn("features", data)
 
     def test_fallback_preserves_url_strings(self):
         content = '{"image": "https://example.com/image"}'
         path = self._write_json(content)
-        data, _ = dev_code.parse_devcontainer_json(path)
+        data, _ = devcode.parse_devcontainer_json(path)
         self.assertEqual(data["image"], "https://example.com/image")
 
     def test_fallback_parse_error_exits(self):
         path = self._write_json("not json at all {{{")
         with self.assertRaises(SystemExit):
-            dev_code.parse_devcontainer_json(path)
+            devcode.parse_devcontainer_json(path)
 
     def test_devcontainer_cli_used_when_available(self):
         config = {"customizations": {"dev-code": []}}
         mock_result = MagicMock(returncode=0, stdout=json.dumps(config))
         with patch("shutil.which", side_effect=lambda x: "/usr/bin/devcontainer" if x == "devcontainer" else None):
             with patch("subprocess.run", return_value=mock_result):
-                data, cli_used = dev_code.parse_devcontainer_json("/fake/devcontainer.json")
+                data, cli_used = devcode.parse_devcontainer_json("/fake/devcontainer.json")
         self.assertTrue(cli_used)
         self.assertIn("customizations", data)
 
@@ -86,7 +86,7 @@ class TestParseDevcontainerJson(unittest.TestCase):
         with patch("shutil.which", side_effect=lambda x: "/usr/bin/jq" if x == "jq" else None):
             with patch("subprocess.run", return_value=mock_result):
                 path = self._write_json('{"name": "test"}')
-                data, cli_used = dev_code.parse_devcontainer_json(path)
+                data, cli_used = devcode.parse_devcontainer_json(path)
         self.assertFalse(cli_used)
         self.assertEqual(data["name"], "test")
 
@@ -103,7 +103,7 @@ class TestWaitForContainer(unittest.TestCase):
         with patch("subprocess.run", side_effect=results):
             with patch("time.sleep"):
                 with patch("time.time", side_effect=[0, 1, 2, 3]):
-                    cid = dev_code.wait_for_container("/fake.json", "/myproject", timeout=60)
+                    cid = devcode.wait_for_container("/fake.json", "/myproject", timeout=60)
         self.assertEqual(cid, "abc123")
 
     def test_times_out_and_exits(self):
@@ -113,15 +113,15 @@ class TestWaitForContainer(unittest.TestCase):
                 # time.time() exceeds deadline immediately after first check
                 with patch("time.time", side_effect=[0, 0, 61, 61, 61]):
                     with self.assertRaises(SystemExit):
-                        dev_code.wait_for_container("/fake.json", "/myproject", timeout=60)
+                        devcode.wait_for_container("/fake.json", "/myproject", timeout=60)
 
     def test_timeout_message_includes_label_value(self):
         with patch("subprocess.run", return_value=self._make_docker_result("")):
             with patch("time.sleep"):
                 with patch("time.time", side_effect=[0, 0, 61, 61, 61]):
-                    with self.assertLogs("dev-code", level="WARNING") as cm:
+                    with self.assertLogs("devcode", level="WARNING") as cm:
                         with self.assertRaises(SystemExit):
-                            dev_code.wait_for_container("/fake.json", "/my/project", timeout=60)
+                            devcode.wait_for_container("/fake.json", "/my/project", timeout=60)
         self.assertTrue(any("/my/project" in line for line in cm.output))
 
     def test_warns_on_multiple_containers(self):
@@ -129,8 +129,8 @@ class TestWaitForContainer(unittest.TestCase):
         with patch("subprocess.run", return_value=result):
             with patch("time.sleep"):
                 with patch("time.time", side_effect=[0, 1, 1, 1, 1]):
-                    with self.assertLogs("dev-code", level="WARNING") as cm:
-                        cid = dev_code.wait_for_container("/fake.json", "/myproject", timeout=60)
+                    with self.assertLogs("devcode", level="WARNING") as cm:
+                        cid = devcode.wait_for_container("/fake.json", "/myproject", timeout=60)
         self.assertEqual(cid, "abc123")
         self.assertTrue(any("multiple" in line.lower() for line in cm.output))
 
@@ -142,9 +142,9 @@ class TestWaitForContainer(unittest.TestCase):
         with patch("subprocess.run", side_effect=fake_run):
             with patch("time.sleep"):
                 with patch("time.time", side_effect=[0, 1]):
-                    with patch.object(dev_code, "is_wsl", return_value=True):
-                        with patch.object(dev_code, "wsl_to_windows", return_value=r"C:\myproject"):
-                            dev_code.wait_for_container("/fake.json", "/myproject", timeout=60)
+                    with patch.object(devcode, "is_wsl", return_value=True):
+                        with patch.object(devcode, "wsl_to_windows", return_value=r"C:\myproject"):
+                            devcode.wait_for_container("/fake.json", "/myproject", timeout=60)
         label_filter = next(a for a in calls[0] if "devcontainer.local_folder" in a)
         self.assertIn(r"C:\myproject", label_filter)
 
@@ -152,20 +152,20 @@ class TestWaitForContainer(unittest.TestCase):
 class TestResolveTemplateDir(unittest.TestCase):
     def test_uses_env_override(self):
         with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": "/custom/templates"}):
-            self.assertEqual(dev_code.resolve_template_dir(), "/custom/templates")
+            self.assertEqual(devcode.resolve_template_dir(), "/custom/templates")
 
     def test_xdg_data_home(self):
         env = {k: v for k, v in os.environ.items()
                if k not in ("DEVCODE_TEMPLATE_DIR", "XDG_DATA_HOME")}
         with patch.dict(os.environ, {**env, "XDG_DATA_HOME": "/xdg"}, clear=True):
-            result = dev_code.resolve_template_dir()
+            result = devcode.resolve_template_dir()
         self.assertEqual(os.path.normpath(result), os.path.normpath("/xdg/dev-code/templates"))
 
     def test_default_xdg(self):
         env = {k: v for k, v in os.environ.items()
                if k not in ("DEVCODE_TEMPLATE_DIR", "XDG_DATA_HOME")}
         with patch.dict(os.environ, env, clear=True):
-            result = dev_code.resolve_template_dir()
+            result = devcode.resolve_template_dir()
         self.assertIn(os.path.join(".local", "share", "dev-code", "templates"), result)
 
 
@@ -174,15 +174,15 @@ class TestGetBuiltinTemplatePath(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             builtin_dir = os.path.join(d, "dev_code_templates", "dev-code")
             os.makedirs(builtin_dir)
-            with patch.object(dev_code, "__file__", os.path.join(d, "dev_code.py")):
-                result = dev_code.get_builtin_template_path("dev-code")
+            with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                result = devcode.get_builtin_template_path("dev-code")
         self.assertIsNotNone(result)
         self.assertTrue(result.endswith("dev-code"))
 
     def test_returns_none_for_unknown(self):
         with tempfile.TemporaryDirectory() as d:
-            with patch.object(dev_code, "__file__", os.path.join(d, "dev_code.py")):
-                result = dev_code.get_builtin_template_path("nonexistent")
+            with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                result = devcode.get_builtin_template_path("nonexistent")
         self.assertIsNone(result)
 
 
@@ -194,7 +194,7 @@ class TestResolveTemplate(unittest.TestCase):
             cfg = os.path.join(tpath, "devcontainer.json")
             open(cfg, "w").close()
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d}):
-                result = dev_code.resolve_template("mytemplate")
+                result = devcode.resolve_template("mytemplate")
         self.assertEqual(result, cfg)
 
     def test_falls_back_to_builtin(self):
@@ -205,16 +205,16 @@ class TestResolveTemplate(unittest.TestCase):
                 cfg = os.path.join(builtin, "devcontainer.json")
                 open(cfg, "w").close()
                 with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                    with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
-                        result = dev_code.resolve_template("dev-code")
+                    with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                        result = devcode.resolve_template("dev-code")
         self.assertEqual(result, cfg)
 
     def test_exits_when_not_found(self):
         with tempfile.TemporaryDirectory() as d:
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d}):
-                with patch.object(dev_code, "__file__", os.path.join(d, "dev_code.py")):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     with self.assertRaises(SystemExit):
-                        dev_code.resolve_template("no-such-template")
+                        devcode.resolve_template("no-such-template")
 
 
 class TestMain(unittest.TestCase):
@@ -232,15 +232,15 @@ class TestMain(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_projectpath_root_exits(self):
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/"]):
             with self.assertRaises(SystemExit):
-                dev_code.main()
+                devcode.main()
 
     def test_code_not_on_path_exits(self):
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/myproject"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value=None):
                 with self.assertRaises(SystemExit):
-                    dev_code.main()
+                    devcode.main()
 
     def test_launches_vscode_with_folder_uri(self):
         launched = []
@@ -248,11 +248,11 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/myproject"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch.object(dev_code, "run_post_launch"):
-                        dev_code.main()
+                    with patch.object(devcode, "run_post_launch"):
+                        devcode.main()
 
         self.assertEqual(len(launched), 1)
         self.assertEqual(launched[0][0], "code")
@@ -265,11 +265,11 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/myproject"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch.object(dev_code, "run_post_launch"):
-                        dev_code.main()
+                    with patch.object(devcode, "run_post_launch"):
+                        devcode.main()
 
         self.assertIn("/workspaces/myproject", launched[0][2])
 
@@ -279,11 +279,11 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/myproject", "--container-folder", "/workspace/custom"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject", "--container-folder", "/workspace/custom"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch.object(dev_code, "run_post_launch"):
-                        dev_code.main()
+                    with patch.object(devcode, "run_post_launch"):
+                        devcode.main()
 
         self.assertIn("/workspace/custom", launched[0][2])
 
@@ -292,11 +292,11 @@ class TestMain(unittest.TestCase):
         def fake_rpl(config_file, project_path, timeout):
             captured["timeout"] = timeout
 
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/myproject", "--timeout", "42"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject", "--timeout", "42"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch("subprocess.Popen", return_value=MagicMock()):
-                    with patch.object(dev_code, "run_post_launch", side_effect=fake_rpl):
-                        dev_code.main()
+                    with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+                        devcode.main()
 
         self.assertEqual(captured["timeout"], 42)
 
@@ -305,11 +305,11 @@ class TestMain(unittest.TestCase):
         def fake_rpl(config_file, project_path, timeout):
             captured["timeout"] = timeout
 
-        with patch.object(sys, "argv", ["dev-code", "open", "claude", "/myproject"]):
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch("subprocess.Popen", return_value=MagicMock()):
-                    with patch.object(dev_code, "run_post_launch", side_effect=fake_rpl):
-                        dev_code.main()
+                    with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+                        devcode.main()
 
         self.assertEqual(captured["timeout"], 300)
 
@@ -318,18 +318,18 @@ class TestListDirChildren(unittest.TestCase):
     def test_returns_absolute_paths(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "file.txt"), "w").close()
-            result = dev_code._list_dir_children(d)
+            result = devcode._list_dir_children(d)
         self.assertEqual(result, [os.path.join(d, "file.txt")])
 
     def test_includes_dot_files(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, ".hidden"), "w").close()
-            result = dev_code._list_dir_children(d)
+            result = devcode._list_dir_children(d)
         self.assertIn(os.path.join(d, ".hidden"), result)
 
     def test_empty_dir_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as d:
-            result = dev_code._list_dir_children(d)
+            result = devcode._list_dir_children(d)
         self.assertEqual(result, [])
 
 
@@ -362,10 +362,10 @@ class TestRunPostLaunch(unittest.TestCase):
         src_isdir = patch("os.path.isdir", return_value=True)
 
         with env_context, src_exists, src_isdir:
-            with patch.object(dev_code, "parse_devcontainer_json", patches["parse_devcontainer_json"]):
-                with patch.object(dev_code, "wait_for_container", patches["wait_for_container"]):
+            with patch.object(devcode, "parse_devcontainer_json", patches["parse_devcontainer_json"]):
+                with patch.object(devcode, "wait_for_container", patches["wait_for_container"]):
                     with patch("subprocess.run", side_effect=fake_run):
-                        dev_code.run_post_launch("/fake/devcontainer.json", "/myproject", 300)
+                        devcode.run_post_launch("/fake/devcontainer.json", "/myproject", 300)
 
         return docker_calls
 
@@ -375,49 +375,49 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_absent_key_skips_docker(self):
         config = {"customizations": {}}
-        with patch.object(dev_code, "parse_devcontainer_json",
+        with patch.object(devcode, "parse_devcontainer_json",
                           return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container") as mock_wait:
-                dev_code.run_post_launch("/fake.json", "/proj", 300)
+            with patch.object(devcode, "wait_for_container") as mock_wait:
+                devcode.run_post_launch("/fake.json", "/proj", 300)
         mock_wait.assert_not_called()
 
     def test_none_value_skips_docker(self):
         # dev-code key present but null — not a dict, skip silently
         config = {"customizations": {"dev-code": None}}
-        with patch.object(dev_code, "parse_devcontainer_json",
+        with patch.object(devcode, "parse_devcontainer_json",
                           return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container") as mock_wait:
-                dev_code.run_post_launch("/fake.json", "/proj", 300)
+            with patch.object(devcode, "wait_for_container") as mock_wait:
+                devcode.run_post_launch("/fake.json", "/proj", 300)
         mock_wait.assert_not_called()
 
     def test_non_dict_value_exits(self):
         # dev-code key exists but is not a dict (e.g. old flat-list format)
         config = {"customizations": {"dev-code": "bad"}}
-        with patch.object(dev_code, "parse_devcontainer_json",
+        with patch.object(devcode, "parse_devcontainer_json",
                           return_value=(config, False)):
             with self.assertRaises(SystemExit):
-                dev_code.run_post_launch("/fake.json", "/proj", 300)
+                devcode.run_post_launch("/fake.json", "/proj", 300)
 
     def test_absent_cp_key_skips_docker(self):
         # dev-code is a dict but has no cp key — silent no-op
         config = {"customizations": {"dev-code": {}}}
-        with patch.object(dev_code, "parse_devcontainer_json",
+        with patch.object(devcode, "parse_devcontainer_json",
                           return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container") as mock_wait:
-                dev_code.run_post_launch("/fake.json", "/proj", 300)
+            with patch.object(devcode, "wait_for_container") as mock_wait:
+                devcode.run_post_launch("/fake.json", "/proj", 300)
         mock_wait.assert_not_called()
 
     def test_cp_non_list_exits(self):
         # cp key exists but is not a list
         config = {"customizations": {"dev-code": {"cp": "oops"}}}
-        with patch.object(dev_code, "parse_devcontainer_json",
+        with patch.object(devcode, "parse_devcontainer_json",
                           return_value=(config, False)):
             with self.assertRaises(SystemExit):
-                dev_code.run_post_launch("/fake.json", "/proj", 300)
+                devcode.run_post_launch("/fake.json", "/proj", 300)
 
     def test_missing_source_warns_and_skips(self):
         entries = [{"target": "/home/vscode/.claude"}]
-        with self.assertLogs("dev-code", level="WARNING") as cm:
+        with self.assertLogs("devcode", level="WARNING") as cm:
             calls = self._run(entries)
         self.assertTrue(any("source" in line.lower() for line in cm.output))
         docker_cp_calls = [c for c in calls if "cp" in c]
@@ -425,7 +425,7 @@ class TestRunPostLaunch(unittest.TestCase):
 
     def test_missing_target_warns_and_skips(self):
         entries = [{"source": "/home/.claude"}]
-        with self.assertLogs("dev-code", level="WARNING") as cm:
+        with self.assertLogs("devcode", level="WARNING") as cm:
             calls = self._run(entries)
         self.assertTrue(any("target" in line.lower() for line in cm.output))
 
@@ -450,14 +450,14 @@ class TestRunPostLaunch(unittest.TestCase):
     def test_capital_Override_warns(self):
         """Capital-O 'Override' is an unknown field and triggers the unknown-field warning."""
         entries = [{"source": "/src", "target": "/tgt", "Override": True}]
-        with self.assertLogs("dev-code", level="WARNING") as cm:
+        with self.assertLogs("devcode", level="WARNING") as cm:
             self._run(entries)
         self.assertTrue(any("Override" in line for line in cm.output))
 
     def test_unknown_field_warns(self):
         """Any field not in the known schema triggers a warning."""
         entries = [{"source": "/src", "target": "/tgt", "typo_field": "bad", "override": True}]
-        with self.assertLogs("dev-code", level="WARNING") as cm:
+        with self.assertLogs("devcode", level="WARNING") as cm:
             self._run(entries)
         self.assertTrue(any("typo_field" in line for line in cm.output))
 
@@ -466,14 +466,14 @@ class TestRunPostLaunch(unittest.TestCase):
         entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "bad_key": "x", "override": True}]
         config = self._make_config(entries)
         children = ["/src/dotfiles/.bashrc", "/src/dotfiles/.zshrc"]
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=True):
-                            with patch.object(dev_code, "_list_dir_children", return_value=children):
-                                with self.assertLogs("dev-code", level="WARNING") as cm:
-                                    dev_code.run_post_launch("/fake.json", "/proj", 300)
+                            with patch.object(devcode, "_list_dir_children", return_value=children):
+                                with self.assertLogs("devcode", level="WARNING") as cm:
+                                    devcode.run_post_launch("/fake.json", "/proj", 300)
         bad_key_warnings = [line for line in cm.output if "bad_key" in line]
         self.assertEqual(len(bad_key_warnings), 1, f"Expected 1 warning, got: {bad_key_warnings}")
 
@@ -510,7 +510,7 @@ class TestRunPostLaunch(unittest.TestCase):
         entries = [{"source": "${localEnv:MISSING_VAR}/.claude", "target": "/tgt"}]
         env = {k: v for k, v in os.environ.items() if k != "MISSING_VAR"}
         with patch.dict(os.environ, env, clear=True):
-            with self.assertLogs("dev-code", level="WARNING"):
+            with self.assertLogs("devcode", level="WARNING"):
                 calls = self._run(entries)
         cp_calls = [c for c in calls if "cp" in c]
         self.assertEqual(cp_calls, [])
@@ -532,12 +532,12 @@ class TestRunPostLaunch(unittest.TestCase):
             return MagicMock(returncode=0)
         with tempfile.TemporaryDirectory() as config_dir:
             config_file = os.path.join(config_dir, "devcontainer.json")
-            with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-                with patch.object(dev_code, "wait_for_container", return_value="cid"):
+            with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+                with patch.object(devcode, "wait_for_container", return_value="cid"):
                     with patch("subprocess.run", side_effect=fake_run):
                         with patch("os.path.exists", return_value=True):
                             with patch("os.path.isdir", return_value=False):
-                                dev_code.run_post_launch(config_file, "/proj", 300)
+                                devcode.run_post_launch(config_file, "/proj", 300)
         self.assertEqual(len(cp_calls), 1)
         # Third arg to "docker cp" is the host source path
         resolved_src = cp_calls[0][2]
@@ -550,12 +550,12 @@ class TestRunPostLaunch(unittest.TestCase):
         entries = [{"source": "/absolute/path/file.json", "target": "/tgt", "override": True}]
         config = self._make_config(entries)
 
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", return_value=MagicMock(returncode=1)):
                     with patch("os.path.exists", return_value=False):
-                        with self.assertLogs("dev-code", level="WARNING") as cm:
-                            dev_code.run_post_launch("/fake/devcontainer.json", "/proj", 300)
+                        with self.assertLogs("devcode", level="WARNING") as cm:
+                            devcode.run_post_launch("/fake/devcontainer.json", "/proj", 300)
         # source not found — warns with the original absolute path unchanged
         self.assertTrue(any("/absolute/path/file.json" in line for line in cm.output))
         # must not be prefixed with config_dir
@@ -571,12 +571,12 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=False):
-                            dev_code.run_post_launch("/fake.json", "/proj", 300)
+                            devcode.run_post_launch("/fake.json", "/proj", 300)
         self.assertEqual(len(cp_calls), 1)
         self.assertIn("/src/file.txt", cp_calls[0])
         # Must not use a tmpdir
@@ -591,12 +591,12 @@ class TestRunPostLaunch(unittest.TestCase):
             if "mkdir" in cmd:
                 mkdir_args.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=False):
-                            dev_code.run_post_launch("/fake.json", "/proj", 300)
+                            devcode.run_post_launch("/fake.json", "/proj", 300)
         self.assertTrue(any("/home/user" in str(c) and "config" not in str(c)
                             for c in mkdir_args),
                         f"Expected mkdir on /home/user, got: {mkdir_args}")
@@ -615,12 +615,12 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=False):
-                            dev_code.run_post_launch("/fake.json", "/proj", 300)
+                            devcode.run_post_launch("/fake.json", "/proj", 300)
         # Override check must test effective path (file.txt inside target dir), not raw target
         self.assertTrue(any("file.txt" in p for p in tested_paths),
                         f"Expected effective path checked, got: {tested_paths}")
@@ -639,14 +639,14 @@ class TestRunPostLaunch(unittest.TestCase):
         children = ["/src/dotfiles/.bashrc", "/src/dotfiles/.gitconfig"]
         def isdir_side_effect(path):
             return path == "/src/dotfiles"
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", side_effect=isdir_side_effect):
-                            with patch.object(dev_code, "_list_dir_children",
+                            with patch.object(devcode, "_list_dir_children",
                                               return_value=children):
-                                dev_code.run_post_launch("/fake.json", "/proj", 300)
+                                devcode.run_post_launch("/fake.json", "/proj", 300)
         # One docker cp per child
         self.assertEqual(len(cp_calls), 2)
         cp_sources = [c[2] for c in cp_calls]  # third arg is host source
@@ -671,14 +671,14 @@ class TestRunPostLaunch(unittest.TestCase):
             ]
             def isdir_side_effect(path):
                 return os.path.normcase(path) == os.path.normcase(dotfiles_dir)
-            with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-                with patch.object(dev_code, "wait_for_container", return_value="cid"):
+            with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+                with patch.object(devcode, "wait_for_container", return_value="cid"):
                     with patch("subprocess.run", side_effect=fake_run):
                         with patch("os.path.exists", return_value=True):
                             with patch("os.path.isdir", side_effect=isdir_side_effect):
-                                with patch.object(dev_code, "_list_dir_children",
+                                with patch.object(devcode, "_list_dir_children",
                                                   return_value=children):
-                                    dev_code.run_post_launch(config_file, "/proj", 300)
+                                    devcode.run_post_launch(config_file, "/proj", 300)
         # Must expand to one docker cp per child, NOT one cp of the whole dir
         self.assertEqual(len(cp_calls), 2)
         cp_sources = [c[2] for c in cp_calls]
@@ -689,13 +689,13 @@ class TestRunPostLaunch(unittest.TestCase):
         """source/. with target not ending in / produces a warning."""
         entries = [{"source": "/src/dotfiles/.", "target": "/home/user", "override": True}]
         config = self._make_config(entries)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                     with patch("os.path.exists", return_value=True):
-                        with patch.object(dev_code, "_list_dir_children", return_value=[]):
-                            with self.assertLogs("dev-code", level="WARNING") as cm:
-                                dev_code.run_post_launch("/fake.json", "/proj", 300)
+                        with patch.object(devcode, "_list_dir_children", return_value=[]):
+                            with self.assertLogs("devcode", level="WARNING") as cm:
+                                devcode.run_post_launch("/fake.json", "/proj", 300)
         self.assertTrue(len(cm.output) > 0, "Expected a warning for missing trailing slash")
 
     def test_dir_contents_empty_dir_is_silent_noop(self):
@@ -707,13 +707,13 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=True):
-                            with patch.object(dev_code, "_list_dir_children", return_value=[]):
-                                dev_code.run_post_launch("/fake.json", "/proj", 300)
+                            with patch.object(devcode, "_list_dir_children", return_value=[]):
+                                devcode.run_post_launch("/fake.json", "/proj", 300)
         self.assertEqual(cp_calls, [])
 
     def test_chown_skipped_when_cp_fails(self):
@@ -725,8 +725,8 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 return MagicMock(returncode=1)  # cp fails
             return MagicMock(returncode=0)
-        with patch.object(dev_code, "parse_devcontainer_json", return_value=(config, False)):
-            with patch.object(dev_code, "wait_for_container", return_value="cid"):
+        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=False):
@@ -736,7 +736,7 @@ class TestRunPostLaunch(unittest.TestCase):
                                 calls.append(cmd)
                                 return fake_run(cmd, **kw)
                             with patch("subprocess.run", side_effect=tracking_run):
-                                dev_code.run_post_launch("/fake.json", "/proj", 300)
+                                devcode.run_post_launch("/fake.json", "/proj", 300)
         chown_calls = [c for c in calls if "chown" in c]
         self.assertEqual(chown_calls, [], "chown must not run after failed cp")
 
@@ -745,7 +745,7 @@ class TestCmdInit(unittest.TestCase):
     def _run_init(self, template_dir):
         with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": template_dir}):
             args = argparse.Namespace(subcommand="init", verbose=False)
-            dev_code.cmd_init(args)
+            devcode.cmd_init(args)
 
     def test_copies_builtin_to_user_dir(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
@@ -755,7 +755,7 @@ class TestCmdInit(unittest.TestCase):
             open(os.path.join(builtin, "devcontainer.json"), "w").close()
             with tempfile.TemporaryDirectory() as user_dir:
                 dest_base = os.path.join(user_dir, "dev-code")
-                with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                     self._run_init(user_dir)
                 self.assertTrue(os.path.isdir(dest_base))
                 self.assertTrue(os.path.exists(os.path.join(dest_base, ".devcontainer", "devcontainer.json")))
@@ -768,7 +768,7 @@ class TestCmdInit(unittest.TestCase):
             with tempfile.TemporaryDirectory() as user_dir:
                 existing = os.path.join(user_dir, "dev-code")
                 os.makedirs(existing)
-                with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                     captured = []
                     with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(a[0])):
                         self._run_init(user_dir)
@@ -776,7 +776,7 @@ class TestCmdInit(unittest.TestCase):
 
     def test_exits_when_builtin_not_found(self):
         with tempfile.TemporaryDirectory() as user_dir:
-            with patch.object(dev_code, "get_builtin_template_path", return_value=None):
+            with patch.object(devcode, "get_builtin_template_path", return_value=None):
                 with self.assertRaises(SystemExit):
                     self._run_init(user_dir)
 
@@ -787,7 +787,7 @@ class TestCmdInit(unittest.TestCase):
             open(os.path.join(builtin, "devcontainer.json"), "w").close()
             with tempfile.TemporaryDirectory() as base:
                 user_dir = os.path.join(base, "new", "nested", "dir")  # doesn't exist yet
-                with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                     self._run_init(user_dir)
                 self.assertTrue(os.path.isdir(user_dir))
                 self.assertTrue(os.path.isdir(os.path.join(user_dir, "dev-code")))
@@ -802,10 +802,10 @@ class TestCmdList(unittest.TestCase):
     def _run_list(self, user_dir, pkg_dir, long=False):
         lines = []
         with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-            with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+            with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                 args = MagicMock(subcommand="list", verbose=False, long=long)
                 with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                    dev_code.cmd_list(args)
+                    devcode.cmd_list(args)
         return lines
 
     def test_lists_user_templates(self):
@@ -838,7 +838,7 @@ class TestCmdList(unittest.TestCase):
             nonexistent = os.path.join(pkg_dir, "no-such-dir")
             lines = self._run_list(nonexistent, pkg_dir)
         combined = "\n".join(str(l) for l in lines)
-        self.assertIn("dev-code init", combined)
+        self.assertIn("devcode init", combined)
 
 
 class TestCmdNew(unittest.TestCase):
@@ -856,8 +856,8 @@ class TestCmdNew(unittest.TestCase):
                                  base=None, edit=False)
                 args.name = "myapp"
                 with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                    with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
-                        dev_code.cmd_new(args)
+                    with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                        devcode.cmd_new(args)
                 self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_creates_template_from_explicit_base(self):
@@ -871,7 +871,7 @@ class TestCmdNew(unittest.TestCase):
                              base="mybase", edit=False)
             args.name = "myapp"
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                dev_code.cmd_new(args)
+                devcode.cmd_new(args)
             self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_exits_if_name_already_exists(self):
@@ -883,7 +883,7 @@ class TestCmdNew(unittest.TestCase):
             args.name = "myapp"
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
                 with self.assertRaises(SystemExit):
-                    dev_code.cmd_new(args)
+                    devcode.cmd_new(args)
 
     def test_exits_if_base_not_found(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
@@ -892,9 +892,9 @@ class TestCmdNew(unittest.TestCase):
                                  base="no-such-base", edit=False)
                 args.name = "myapp"
                 with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                    with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                    with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                         with self.assertRaises(SystemExit):
-                            dev_code.cmd_new(args)
+                            devcode.cmd_new(args)
 
     def test_edit_flag_calls_cmd_open(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
@@ -904,9 +904,9 @@ class TestCmdNew(unittest.TestCase):
                                  base=None, edit=True)
                 args.name = "myapp"
                 with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                    with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
-                        with patch.object(dev_code, "cmd_open") as mock_open:
-                            dev_code.cmd_new(args)
+                    with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                        with patch.object(devcode, "cmd_open") as mock_open:
+                            devcode.cmd_new(args)
                 mock_open.assert_called_once()
                 call_args = mock_open.call_args[0][0]
                 self.assertEqual(call_args.template, "myapp")
@@ -918,8 +918,8 @@ class TestCmdEdit(unittest.TestCase):
         with tempfile.TemporaryDirectory() as user_dir:
             args = MagicMock(subcommand="edit", verbose=False, template=None)
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                with patch.object(dev_code, "cmd_open") as mock_open:
-                    dev_code.cmd_edit(args)
+                with patch.object(devcode, "cmd_open") as mock_open:
+                    devcode.cmd_edit(args)
             call_args = mock_open.call_args[0][0]
             self.assertEqual(call_args.projectpath, user_dir)
 
@@ -931,8 +931,8 @@ class TestCmdEdit(unittest.TestCase):
 
             args = MagicMock(subcommand="edit", verbose=False, template="claude")
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                with patch.object(dev_code, "cmd_open") as mock_open:
-                    dev_code.cmd_edit(args)
+                with patch.object(devcode, "cmd_open") as mock_open:
+                    devcode.cmd_edit(args)
             call_args = mock_open.call_args[0][0]
             self.assertEqual(call_args.projectpath, os.path.join(user_dir, "claude"))
 
@@ -942,25 +942,25 @@ class TestCmdEdit(unittest.TestCase):
             args = MagicMock(subcommand="edit", verbose=False, template=None)
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": nonexistent}):
                 with self.assertRaises(SystemExit):
-                    dev_code.cmd_edit(args)
+                    devcode.cmd_edit(args)
 
     def test_exits_if_named_template_not_found(self):
         with tempfile.TemporaryDirectory() as user_dir:
             args = MagicMock(subcommand="edit", verbose=False, template="no-such")
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
                 with self.assertRaises(SystemExit):
-                    dev_code.cmd_edit(args)
+                    devcode.cmd_edit(args)
 
 
 class TestTemplateNameFromConfig(unittest.TestCase):
     def test_extracts_name(self):
         path = "/home/user/.local/share/dev-code/templates/claude/.devcontainer/devcontainer.json"
-        self.assertEqual(dev_code._template_name_from_config(path), "claude")
+        self.assertEqual(devcode._template_name_from_config(path), "claude")
 
     def test_fallback_on_no_devcontainer(self):
         path = "/some/arbitrary/path/devcontainer.json"
         # Should not raise; returns some string
-        result = dev_code._template_name_from_config(path)
+        result = devcode._template_name_from_config(path)
         self.assertIsInstance(result, str)
 
 
@@ -978,7 +978,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         combined = "\n".join(lines)
         self.assertIn("claude", combined)
         self.assertIn("abc123def456", combined)
@@ -991,7 +991,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         self.assertTrue(any("no running devcontainers" in str(l) for l in lines))
 
     def test_docker_unavailable_exits(self):
@@ -999,7 +999,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with self.assertRaises(SystemExit):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
 
     def test_malformed_row_skipped(self):
         # A row with fewer than 4 fields after dropping CreatedAt should be skipped silently
@@ -1011,7 +1011,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)  # must not raise
+                devcode.cmd_ps(args)  # must not raise
         combined = "\n".join(lines)
         self.assertIn("bbb222", combined)  # good row shown
         self.assertNotIn("abc123", combined)  # malformed row skipped
@@ -1030,7 +1030,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         combined = "\n".join(lines)
         self.assertIn("aaa111", combined)   # stopped container included
         self.assertIn("bbb222", combined)   # running container included
@@ -1049,7 +1049,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         combined = "\n".join(lines)
         self.assertNotIn("aaa111", combined)   # stopped excluded
         self.assertIn("bbb222", combined)      # running shown
@@ -1060,7 +1060,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         self.assertTrue(any("no devcontainers" in str(l) and "running" not in str(l) for l in lines))
 
     def test_interactive_valid_selection_calls_cmd_open(self):
@@ -1076,9 +1076,9 @@ class TestCmdPs(unittest.TestCase):
         )
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
-                with patch("dev_code.cmd_open") as mock_open:
+                with patch("devcode.cmd_open") as mock_open:
                     args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
-                    dev_code.cmd_ps(args)
+                    devcode.cmd_ps(args)
         mock_open.assert_called_once()
         call_args = mock_open.call_args[0][0]
         self.assertEqual(call_args.template, "python")
@@ -1101,9 +1101,9 @@ class TestCmdPs(unittest.TestCase):
         )
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
-                with patch("dev_code.cmd_open") as mock_open:
+                with patch("devcode.cmd_open") as mock_open:
                     args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
-                    dev_code.cmd_ps(args)
+                    devcode.cmd_ps(args)
         call_args = mock_open.call_args[0][0]
         self.assertEqual(call_args.container_folder, "/workspaces/myapp")  # fallback
 
@@ -1118,7 +1118,7 @@ class TestCmdPs(unittest.TestCase):
             with patch("builtins.input", return_value="99"):
                 args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
                 with self.assertRaises(SystemExit):
-                    dev_code.cmd_ps(args)
+                    devcode.cmd_ps(args)
 
     def test_interactive_non_integer_exits(self):
         rows = [
@@ -1131,7 +1131,7 @@ class TestCmdPs(unittest.TestCase):
             with patch("builtins.input", return_value="abc"):
                 args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
                 with self.assertRaises(SystemExit):
-                    dev_code.cmd_ps(args)
+                    devcode.cmd_ps(args)
 
     def test_interactive_missing_config_label_exits(self):
         rows = [
@@ -1144,7 +1144,7 @@ class TestCmdPs(unittest.TestCase):
             with patch("builtins.input", return_value="1"):
                 args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
                 with self.assertRaises(SystemExit):
-                    dev_code.cmd_ps(args)
+                    devcode.cmd_ps(args)
 
     def test_interactive_empty_table_no_prompt(self):
         ls_result = MagicMock(returncode=0, stdout="")
@@ -1152,7 +1152,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", side_effect=lambda _: prompted.append(True) or "1"):
                 args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         self.assertEqual(prompted, [])   # input() was never called
 
     def test_interactive_all_with_malformed_row_correct_selection(self):
@@ -1164,9 +1164,9 @@ class TestCmdPs(unittest.TestCase):
         inspect_result = MagicMock(returncode=0, stdout='[]')
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
-                with patch("dev_code.cmd_open") as mock_open:
+                with patch("devcode.cmd_open") as mock_open:
                     args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=True)
-                    dev_code.cmd_ps(args)
+                    devcode.cmd_ps(args)
         mock_open.assert_called_once()
         call_args = mock_open.call_args[0][0]
         self.assertEqual(call_args.projectpath, "/home/user/myapp")  # good row, not malformed
@@ -1186,7 +1186,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_ps(args)
+                devcode.cmd_ps(args)
         # Find data rows (skip header)
         data_rows = [l for l in lines if "older222" in l or "newer111" in l]
         self.assertEqual(len(data_rows), 2)
@@ -1221,7 +1221,7 @@ class TestCmdOpenDryRun(unittest.TestCase):
         )
         with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                dev_code.cmd_open(args)
+                devcode.cmd_open(args)
         return lines
 
     def test_prints_config_and_uri(self):
@@ -1280,7 +1280,7 @@ class TestCmdOpenDryRun(unittest.TestCase):
                                               container_folder=None, timeout=300, dry_run=True,
                                               verbose=False)
                     with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                        dev_code.cmd_open(args)
+                        devcode.cmd_open(args)
         combined = "\n".join(lines)
         self.assertIn("<unset:", combined)
 
@@ -1291,7 +1291,7 @@ class TestBanner(unittest.TestCase):
         Uses subprocess to avoid argparse SystemExit contaminating the test runner.
         """
         result = subprocess.run(
-            ["uv", "run", "python", "src/dev_code.py", "--help"],
+            ["uv", "run", "python", "src/devcode.py", "--help"],
             capture_output=True, text=True, encoding="utf-8",
             cwd=os.path.join(os.path.dirname(__file__), ".."),
         )
@@ -1308,7 +1308,7 @@ class TestListTemplateNames(unittest.TestCase):
         with tempfile.TemporaryDirectory() as user_dir:
             self._make_dirs(user_dir, "alpha", "beta")
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                names = dev_code._list_template_names()
+                names = devcode._list_template_names()
         self.assertIn("alpha", names)
         self.assertIn("beta", names)
 
@@ -1316,9 +1316,9 @@ class TestListTemplateNames(unittest.TestCase):
         with tempfile.TemporaryDirectory() as pkg_dir:
             builtin_base = os.path.join(pkg_dir, "dev_code_templates", "dev-code")
             os.makedirs(builtin_base)
-            with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+            with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                 with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": "/nonexistent_xyz"}):
-                    names = dev_code._list_template_names()
+                    names = devcode._list_template_names()
         self.assertIn("dev-code", names)
 
     def test_deduplicates_same_name(self):
@@ -1326,23 +1326,23 @@ class TestListTemplateNames(unittest.TestCase):
             with tempfile.TemporaryDirectory() as user_dir:
                 os.makedirs(os.path.join(pkg_dir, "dev_code_templates", "shared"))
                 os.makedirs(os.path.join(user_dir, "shared"))
-                with patch.object(dev_code, "__file__", os.path.join(pkg_dir, "dev_code.py")):
+                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                     with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                        names = dev_code._list_template_names()
+                        names = devcode._list_template_names()
         self.assertEqual(names.count("shared"), 1)
 
     def test_returns_sorted(self):
         with tempfile.TemporaryDirectory() as user_dir:
             self._make_dirs(user_dir, "zebra", "alpha", "mango")
             with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": user_dir}):
-                names = dev_code._list_template_names()
+                names = devcode._list_template_names()
         subset = [n for n in names if n in ("zebra", "alpha", "mango")]
         self.assertEqual(subset, sorted(subset))
 
     def test_returns_empty_on_missing_dirs(self):
         with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": "/totally_nonexistent_xyz"}):
-            with patch.object(dev_code, "__file__", "/nonexistent/dev_code.py"):
-                names = dev_code._list_template_names()
+            with patch.object(devcode, "__file__", "/nonexistent/devcode.py"):
+                names = devcode._list_template_names()
         self.assertEqual(names, [])
 
 class TestCmdComplete(unittest.TestCase):
@@ -1353,114 +1353,114 @@ class TestCmdComplete(unittest.TestCase):
         # --complete receives [cword_index_str, *words] as complete_words
         args = argparse.Namespace(complete_words=[str(cword_index)] + words, shell=None)
         captured = []
-        with patch.object(dev_code, "_list_template_names", return_value=template_names):
+        with patch.object(devcode, "_list_template_names", return_value=template_names):
             with patch("builtins.print", side_effect=lambda x: captured.append(x)):
                 with self.assertRaises(SystemExit) as cm:
-                    dev_code.cmd_completion(args)
+                    devcode.cmd_completion(args)
         self.assertEqual(cm.exception.code, 0)
         return captured
 
     def test_completing_subcommand_returns_all_subcommands(self):
-        result = self._run(1, ["dev-code", ""])
+        result = self._run(1, ["devcode", ""])
         for sub in ("open", "new", "edit", "init", "list", "ps", "completion"):
             self.assertIn(sub, result)
 
     def test_prefix_filters_subcommands(self):
-        result = self._run(1, ["dev-code", "op"])
+        result = self._run(1, ["devcode", "op"])
         self.assertEqual(result, ["open"])
 
     def test_open_index2_returns_template_names(self):
-        result = self._run(2, ["dev-code", "open", ""], template_names=["alpha", "beta"])
+        result = self._run(2, ["devcode", "open", ""], template_names=["alpha", "beta"])
         self.assertIn("alpha", result)
         self.assertIn("beta", result)
 
     def test_open_index2_prefix_filters_templates(self):
-        result = self._run(2, ["dev-code", "open", "al"], template_names=["alpha", "beta"])
+        result = self._run(2, ["devcode", "open", "al"], template_names=["alpha", "beta"])
         self.assertEqual(result, ["alpha"])
 
     def test_open_index3_returns_empty(self):
-        result = self._run(3, ["dev-code", "open", "mytemplate", ""])
+        result = self._run(3, ["devcode", "open", "mytemplate", ""])
         self.assertEqual(result, [])
 
     def test_open_index4_returns_empty(self):
-        result = self._run(4, ["dev-code", "open", "mytemplate", "/path", ""])
+        result = self._run(4, ["devcode", "open", "mytemplate", "/path", ""])
         self.assertEqual(result, [])
 
     def test_open_flag_completion_at_index3(self):
-        result = self._run(3, ["dev-code", "open", "mytemplate", "--"])
+        result = self._run(3, ["devcode", "open", "mytemplate", "--"])
         self.assertIn("--dry-run", result)
         self.assertIn("--container-folder", result)
         self.assertIn("--timeout", result)
 
     def test_open_flag_completion_at_index2(self):
-        result = self._run(2, ["dev-code", "open", "--"])
+        result = self._run(2, ["devcode", "open", "--"])
         self.assertIn("--dry-run", result)
 
     def test_new_index2_returns_empty(self):
-        result = self._run(2, ["dev-code", "new", ""])
+        result = self._run(2, ["devcode", "new", ""])
         self.assertEqual(result, [])
 
     def test_new_index3_returns_template_names(self):
-        result = self._run(3, ["dev-code", "new", "myname", ""], template_names=["base1"])
+        result = self._run(3, ["devcode", "new", "myname", ""], template_names=["base1"])
         self.assertIn("base1", result)
 
     def test_new_flag_completion(self):
-        result = self._run(2, ["dev-code", "new", "--"])
+        result = self._run(2, ["devcode", "new", "--"])
         self.assertEqual(result, ["--edit"])
 
     def test_edit_index2_returns_template_names(self):
-        result = self._run(2, ["dev-code", "edit", ""], template_names=["mytemplate"])
+        result = self._run(2, ["devcode", "edit", ""], template_names=["mytemplate"])
         self.assertIn("mytemplate", result)
 
     def test_edit_index3_returns_empty(self):
-        result = self._run(3, ["dev-code", "edit", "mytemplate", ""])
+        result = self._run(3, ["devcode", "edit", "mytemplate", ""])
         self.assertEqual(result, [])
 
     def test_edit_flag_returns_empty(self):
-        result = self._run(2, ["dev-code", "edit", "--"])
+        result = self._run(2, ["devcode", "edit", "--"])
         self.assertEqual(result, [])
 
     def test_list_index2_returns_long(self):
-        result = self._run(2, ["dev-code", "list", ""])
+        result = self._run(2, ["devcode", "list", ""])
         self.assertEqual(result, ["--long"])
 
     def test_list_higher_index_returns_long(self):
-        result = self._run(3, ["dev-code", "list", "--long", ""])
+        result = self._run(3, ["devcode", "list", "--long", ""])
         self.assertEqual(result, ["--long"])
 
     def test_list_prefix_filter_long(self):
-        result = self._run(2, ["dev-code", "list", "--l"])
+        result = self._run(2, ["devcode", "list", "--l"])
         self.assertEqual(result, ["--long"])
 
     def test_list_partial_word_no_match_returns_empty(self):
         # list branch fires unconditionally; prefix filter removes --long when current_word="x"
-        result = self._run(2, ["dev-code", "list", "x"])
+        result = self._run(2, ["devcode", "list", "x"])
         self.assertEqual(result, [])
 
     def test_init_returns_empty(self):
-        result = self._run(2, ["dev-code", "init", ""])
+        result = self._run(2, ["devcode", "init", ""])
         self.assertEqual(result, [])
 
     def test_ps_returns_empty(self):
-        result = self._run(2, ["dev-code", "ps", ""])
+        result = self._run(2, ["devcode", "ps", ""])
         self.assertEqual(result, [])
 
     def test_ps_flags_completion(self):
-        result = self._run(2, ["dev-code", "ps", "-"])
+        result = self._run(2, ["devcode", "ps", "-"])
         self.assertIn("-a", result)
         self.assertIn("-i", result)
 
     def test_completion_index2_returns_shells(self):
-        result = self._run(2, ["dev-code", "completion", ""])
+        result = self._run(2, ["devcode", "completion", ""])
         self.assertIn("bash", result)
         self.assertIn("zsh", result)
 
     def test_completion_index2_prefix_filter(self):
-        result = self._run(2, ["dev-code", "completion", "b"])
+        result = self._run(2, ["devcode", "completion", "b"])
         self.assertEqual(result, ["bash"])
 
     def test_completion_index3_returns_empty(self):
-        result = self._run(3, ["dev-code", "completion", "bash", ""])
+        result = self._run(3, ["devcode", "completion", "bash", ""])
         self.assertEqual(result, [])
 
     def test_empty_complete_words_exits_zero_no_output(self):
@@ -1468,7 +1468,7 @@ class TestCmdComplete(unittest.TestCase):
         captured = []
         with patch("builtins.print", side_effect=lambda x: captured.append(x)):
             with self.assertRaises(SystemExit) as cm:
-                dev_code.cmd_completion(args)
+                devcode.cmd_completion(args)
         self.assertEqual(cm.exception.code, 0)
         self.assertEqual(captured, [])
 
@@ -1477,7 +1477,7 @@ class TestCmdComplete(unittest.TestCase):
         captured = []
         with patch("builtins.print", side_effect=lambda x: captured.append(x)):
             with self.assertRaises(SystemExit) as cm:
-                dev_code.cmd_completion(args)
+                devcode.cmd_completion(args)
         self.assertEqual(cm.exception.code, 0)
         self.assertEqual(captured, [])
 
@@ -1486,13 +1486,13 @@ class TestCmdComplete(unittest.TestCase):
         captured = []
         with patch("builtins.print", side_effect=lambda x: captured.append(x)):
             with self.assertRaises(SystemExit) as cm:
-                dev_code.cmd_completion(args)
+                devcode.cmd_completion(args)
         self.assertEqual(cm.exception.code, 0)
         self.assertEqual(captured, [])
 
     def test_cword_index0_returns_empty(self):
         # index 0 is the command name slot — nothing to complete
-        result = self._run(0, ["dev-code"])
+        result = self._run(0, ["devcode"])
         self.assertEqual(result, [])
 
 
@@ -1501,7 +1501,7 @@ class TestCmdCompletion(unittest.TestCase):
         args = argparse.Namespace(shell=shell, complete_words=None)
         buf = io.StringIO()
         with patch("builtins.print", side_effect=lambda *a, **kw: buf.write(a[0] if a else "")):
-            dev_code.cmd_completion(args)
+            devcode.cmd_completion(args)
         return buf.getvalue()
 
     def test_bash_contains_function_name(self):
@@ -1531,5 +1531,5 @@ class TestCmdCompletion(unittest.TestCase):
     def test_unknown_shell_exits_1(self):
         args = argparse.Namespace(shell="fish", complete_words=None)
         with self.assertRaises(SystemExit) as cm:
-            dev_code.cmd_completion(args)
+            devcode.cmd_completion(args)
         self.assertEqual(cm.exception.code, 1)
