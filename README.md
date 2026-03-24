@@ -146,6 +146,8 @@ $DEVCODE_TEMPLATE_DIR
 
 ## Commands
 
+Pass `-v` / `--verbose` before the subcommand to enable debug output (e.g. `devcode -v open ...`).
+
 | Command                          | Description                                                    |
 | -------------------------------- | -------------------------------------------------------------- |
 | `devcode open <template> <path>` | Open a project using a template                                |
@@ -171,6 +173,37 @@ devcode ps -a -i
 
 Select a container to reopen its project in VS Code.
 
+### Command flags
+
+**`open`**
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--dry-run` | — | Print resolved config path, URI, and copy plan without executing anything. |
+| `--container-folder <path>` | `/workspaces/<project-name>` | Override the mount path inside the container. |
+| `--timeout <seconds>` | `300` | Seconds to wait for the container to start before aborting post-launch steps. |
+
+**`new`**
+
+| Flag / Arg | Default | Description |
+| ---------- | ------- | ----------- |
+| `[base]` | `dev-code` | Template to copy from when creating the new template. |
+| `--edit` | — | Open the new template in VS Code immediately after creation. |
+
+**`edit`**
+
+Called with no argument, opens the entire templates directory instead of a specific template.
+
+**`list`**
+
+| Flag | Description |
+| ---- | ----------- |
+| `--long` | Show the templates directory path and the full filesystem path of each template. |
+
+**`ps`**
+
+After printing the list, `-i` prompts `Open [1-N]:` and reopens the selected project in VS Code.
+
 ---
 
 ## Templates in practice
@@ -186,6 +219,8 @@ devcode open my-python ~/projects/app
 
 ## File Copy (inject files into container)
 
+Use the `cp` key under `customizations.dev-code` in your `devcontainer.json` to copy files from the host into the container on launch.
+
 ```json
 {
   "customizations": {
@@ -200,6 +235,34 @@ devcode open my-python ~/projects/app
   }
 }
 ```
+
+### Fields
+
+| Field | Type | Default | Description |
+| ------------- | ------ | ------- | ----------- |
+| `source` | string | required | Host path. Supports `${localEnv:VAR}` substitution, paths relative to `.devcontainer/`, and a `/.` suffix to copy directory *contents* instead of the directory itself. Entry is silently skipped if a referenced env var is unset. |
+| `target` | string | required | Container path. Trailing `/` means "copy into this directory". |
+| `override` | bool | `false` | When `false`, skip the entry if the effective target already exists in the container. |
+| `owner` | string | — | User for `chown -R owner:group` after copy. Must be paired with `group`. |
+| `group` | string | — | Group for `chown -R owner:group`. Must be paired with `owner`. |
+| `permissions` | string | — | Mode string passed to `chmod -R` (e.g. `"600"`). |
+
+### Directory contents (`/.` suffix)
+
+Append `/.` to `source` to copy each child of a directory into `target` rather than the directory itself. `target` must end with `/`.
+
+```json
+{
+  "source": "${localEnv:HOME}/.config/myapp/.",
+  "target": "/home/vscode/.config/myapp/",
+  "override": false,
+  "owner": "vscode",
+  "group": "vscode",
+  "permissions": "600"
+}
+```
+
+This copies every file in `~/.config/myapp/` into `/home/vscode/.config/myapp/`, skipping any that already exist, then sets ownership and mode on each copied file.
 
 Perfect for:
 
