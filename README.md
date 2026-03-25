@@ -15,9 +15,10 @@
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/dev-code)](https://pypi.org/project/dev-code/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+Reusable Dev Containers for any project — without modifying the repository.
+
 ---
 
-Reusable Dev Containers for any project — without modifying the repository.
 
 `devcode` is a CLI that opens any project in VS Code Dev Containers using reusable, local templates.
 
@@ -229,7 +230,7 @@ eval "$(devcode completion bash)"
 devcode init
 devcode new python-dev
 devcode edit python-dev
-devcode open python-dev ~/projects/api
+devcode open python-dev ~/projects/my-app
 ```
 
 ---
