@@ -1271,7 +1271,7 @@ class TestCmdPs(unittest.TestCase):
                     devcode.cmd_ps(args)
         mock_open.assert_called_once()
         call_args = mock_open.call_args[0][0]
-        self.assertEqual(call_args.template, "python")
+        self.assertEqual(call_args.template, "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json")
         self.assertEqual(call_args.projectpath, "/home/user/myapp")
         self.assertEqual(call_args.container_folder, "/workspaces/myapp")
         self.assertEqual(call_args.timeout, 300)

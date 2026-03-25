@@ -783,7 +783,6 @@ def cmd_ps(args) -> None:
         print("container has no config_file label")
         sys.exit(1)
 
-    template = _template_name_from_config(config_file)
     projectpath = local_folder
 
     # Resolve container_folder from docker inspect mounts
@@ -806,7 +805,7 @@ def cmd_ps(args) -> None:
         container_folder = f"/workspaces/{os.path.basename(local_folder)}"
 
     open_args = argparse.Namespace(
-        template=template,
+        template=config_file,
         projectpath=projectpath,
         container_folder=container_folder,
         timeout=300,
