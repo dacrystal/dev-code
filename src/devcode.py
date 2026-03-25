@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 logger = logging.getLogger("devcode")
 
@@ -138,16 +139,78 @@ def get_builtin_template_path(name: str) -> str | None:
 
 def resolve_template(name: str) -> str:
     """Return absolute path to template's devcontainer.json. Exits on failure."""
+    # 1. Explicit path prefix — skip template lookup entirely
+    if _has_path_prefix(name):
+        path_result = _resolve_as_path(name)
+        if path_result:
+            return path_result
+        expanded = os.path.abspath(os.path.expanduser(name))
+        if os.path.isfile(expanded):
+            logger.error("config file must be named devcontainer.json")
+            sys.exit(1)
+        if os.path.isdir(expanded):
+            logger.error("path '%s' does not contain a devcontainer.json", name)
+            sys.exit(1)
+        logger.error("path not found: %s", name)
+        sys.exit(1)
+    # 2. Try template lookup (user templates, then builtins)
     user_path = os.path.join(resolve_template_dir(), name, ".devcontainer", "devcontainer.json")
     if os.path.exists(user_path):
+        if _resolve_as_path(name):
+            logger.warning(
+                "'%s' matches both a template and a local path — using template. "
+                "Use './%s' to open as path instead.",
+                name, name,
+            )
         return user_path
     builtin = get_builtin_template_path(name)
     if builtin:
         path = os.path.join(builtin, ".devcontainer", "devcontainer.json")
         if os.path.exists(path):
+            if _resolve_as_path(name):
+                logger.warning(
+                    "'%s' matches both a template and a local path — using template. "
+                    "Use './%s' to open as path instead.",
+                    name, name,
+                )
             return path
+    # 3. No template — try path fallback
+    path_result = _resolve_as_path(name)
+    if path_result:
+        return path_result
     logger.error("template not found: %s", name)
     sys.exit(1)
+
+
+def _resolve_as_path(p: str) -> str | None:
+    """Return absolute path to devcontainer.json if p resolves as a path, else None."""
+    expanded = os.path.abspath(os.path.expanduser(p))
+    if os.path.isfile(expanded):
+        return expanded if os.path.basename(expanded) == "devcontainer.json" else None
+    if os.path.isdir(expanded):
+        candidate = os.path.join(expanded, ".devcontainer", "devcontainer.json")
+        if os.path.exists(candidate):
+            return candidate
+        candidate = os.path.join(expanded, "devcontainer.json")
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _has_path_prefix(p: str) -> bool:
+    """Return True if p has an explicit path prefix (not a plain template name).
+
+    Detection: p starts with its own topmost parent component.
+    - "./foo" → last parent "." → starts with "." → True
+    - "../foo" → last parent ".." → starts with ".." → True
+    - "/foo" → last parent "/" → starts with "/" → True
+    - "~/foo" → expanded to absolute → starts with "/" → True
+    - "mydev" → last parent "." → does NOT start with "." → False
+    """
+    if p.startswith("~"):
+        p = str(Path(p).expanduser())
+    parents = Path(p).parents
+    return not len(parents) or p.startswith(str(parents[-1]))
 
 
 def build_devcontainer_uri(host_path: str, config_file: str, container_folder: str) -> str:
@@ -720,7 +783,6 @@ def cmd_ps(args) -> None:
         print("container has no config_file label")
         sys.exit(1)
 
-    template = _template_name_from_config(config_file)
     projectpath = local_folder
 
     # Resolve container_folder from docker inspect mounts
@@ -743,7 +805,7 @@ def cmd_ps(args) -> None:
         container_folder = f"/workspaces/{os.path.basename(local_folder)}"
 
     open_args = argparse.Namespace(
-        template=template,
+        template=config_file,
         projectpath=projectpath,
         container_folder=container_folder,
         timeout=300,
