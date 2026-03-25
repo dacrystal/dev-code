@@ -89,36 +89,43 @@ def wsl_to_windows(path: str) -> str:
         raise RuntimeError(f"Failed to convert path with wslpath: {path}") from e
 
 
-def resolve_template_dir() -> str:
-    """Return the user template directory (DEVCODE_TEMPLATE_DIR or XDG default)."""
-    override = os.environ.get("DEVCODE_TEMPLATE_DIR")
-    if override:
-        return override
+def resolve_template_search_path() -> list[str]:
+    """Return ordered list of template search directories from DEVCODE_TEMPLATE_PATH."""
+    new_var = os.environ.get("DEVCODE_TEMPLATE_PATH")
     xdg = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share"))
-    return os.path.join(xdg, "dev-code", "templates")
+    default = os.path.join(xdg, "dev-code", "templates")
+    if not new_var:
+        return [default]
+    dirs = [d for d in new_var.split(":") if d]
+    return dirs if dirs else [default]
+
+
+def _write_template_dir() -> str:
+    """Return the first (canonical write) directory from the template search path."""
+    return resolve_template_search_path()[0]
 
 
 def _list_template_names() -> list:
-    """Return sorted deduplicated list of all template names (builtins + user)."""
-    names = set()
-    try:
-        module_dir = os.path.dirname(os.path.abspath(__file__))
-        builtin_base = os.path.join(module_dir, "dev_code_templates")
-        if os.path.isdir(builtin_base):
-            for name in os.listdir(builtin_base):
-                if os.path.isdir(os.path.join(builtin_base, name)):
-                    names.add(name)
-    except Exception:
-        pass
-    try:
-        user_dir = resolve_template_dir()
-        if os.path.isdir(user_dir):
-            for name in os.listdir(user_dir):
-                if os.path.isdir(os.path.join(user_dir, name)):
-                    names.add(name)
-    except Exception:
-        pass
-    return sorted(names)
+    """Return sorted deduplicated list of valid user template names across all search dirs."""
+    seen = []
+    seen_set = set()
+    for search_dir in resolve_template_search_path():
+        if not os.path.isdir(search_dir):
+            logger.debug("template search dir not found, skipping: %s", search_dir)
+            continue
+        try:
+            for name in sorted(os.listdir(search_dir)):
+                if name in seen_set:
+                    continue
+                candidate = os.path.join(search_dir, name)
+                if _is_valid_template(candidate):
+                    seen.append(name)
+                    seen_set.add(name)
+                else:
+                    logger.debug("skipping invalid template: %s", candidate)
+        except Exception:
+            pass
+    return sorted(seen)
 
 
 def get_builtin_template_path(name: str) -> str | None:
@@ -134,6 +141,22 @@ def get_builtin_template_path(name: str) -> str | None:
             return str(ref)
     except Exception as e:
         logger.debug("importlib.resources fallback failed for %r: %s", name, e)
+    return None
+
+
+def _is_valid_template(template_root: str) -> bool:
+    """Return True if template_root contains .devcontainer/devcontainer.json."""
+    return os.path.isfile(
+        os.path.join(template_root, ".devcontainer", "devcontainer.json")
+    )
+
+
+def _find_template_in_search_path(name: str) -> str | None:
+    """Search all template dirs for name; return template root path or None."""
+    for search_dir in resolve_template_search_path():
+        candidate = os.path.join(search_dir, name)
+        if _is_valid_template(candidate):
+            return candidate
     return None
 
 
@@ -153,27 +176,17 @@ def resolve_template(name: str) -> str:
             sys.exit(1)
         logger.error("path not found: %s", name)
         sys.exit(1)
-    # 2. Try template lookup (user templates, then builtins)
-    user_path = os.path.join(resolve_template_dir(), name, ".devcontainer", "devcontainer.json")
-    if os.path.exists(user_path):
+    # 2. Try template lookup across all search dirs
+    template_root = _find_template_in_search_path(name)
+    if template_root:
+        config = os.path.join(template_root, ".devcontainer", "devcontainer.json")
         if _resolve_as_path(name):
             logger.warning(
                 "'%s' matches both a template and a local path — using template. "
                 "Use './%s' to open as path instead.",
                 name, name,
             )
-        return user_path
-    builtin = get_builtin_template_path(name)
-    if builtin:
-        path = os.path.join(builtin, ".devcontainer", "devcontainer.json")
-        if os.path.exists(path):
-            if _resolve_as_path(name):
-                logger.warning(
-                    "'%s' matches both a template and a local path — using template. "
-                    "Use './%s' to open as path instead.",
-                    name, name,
-                )
-            return path
+        return config
     # 3. No template — try path fallback
     path_result = _resolve_as_path(name)
     if path_result:
@@ -548,19 +561,19 @@ def _cmd_open_dry_run(config_file: str, project_path: str, uri: str) -> None:
 
 def cmd_new(args) -> None:
     """Create a new template by copying a base template."""
-    template_dir = resolve_template_dir()
-    dest = os.path.join(template_dir, args.name)
+    write_dir = _write_template_dir()
+    dest = os.path.join(write_dir, args.name)
 
     # Step 1: fail if name already exists
     if os.path.exists(dest):
         logger.error("template '%s' already exists: %s", args.name, dest)
         sys.exit(1)
 
-    # Step 2: resolve base (check before creating dirs)
+    # Step 2: resolve base — search all dirs, then builtins
     base_name = args.base or "dev-code"
-    base_user = os.path.join(template_dir, base_name)
-    if os.path.isdir(base_user):
-        base_src = base_user
+    base_root = _find_template_in_search_path(base_name)
+    if base_root:
+        base_src = base_root
     else:
         builtin = get_builtin_template_path(base_name)
         if builtin:
@@ -569,11 +582,11 @@ def cmd_new(args) -> None:
             logger.error("base template not found: %s", base_name)
             sys.exit(1)
 
-    # Step 3-4: create template dir
+    # Step 3-4: create write dir
     try:
-        os.makedirs(template_dir, exist_ok=True)
+        os.makedirs(write_dir, exist_ok=True)
     except OSError as e:
-        logger.error("cannot create template dir %s: %s", template_dir, e)
+        logger.error("cannot create template dir %s: %s", write_dir, e)
         sys.exit(1)
 
     # Step 5: copy
@@ -593,28 +606,22 @@ def cmd_new(args) -> None:
 
 
 def cmd_edit(args) -> None:
-    """Open a template directory for editing using the built-in dev-code devcontainer."""
-    template_dir = resolve_template_dir()
-
-    if args.template is None:
-        if not os.path.isdir(template_dir):
-            logger.error("template dir not found: %s — run 'devcode init' first", template_dir)
-            sys.exit(1)
-        project_path = template_dir
-    else:
-        project_path = os.path.join(template_dir, args.template)
-        if not os.path.isdir(project_path):
+    """Open a template directory directly in VS Code for editing."""
+    if args.template is not None:
+        template_root = _find_template_in_search_path(args.template)
+        if template_root is None:
             logger.error("template not found: %s", args.template)
             sys.exit(1)
-
-    open_args = argparse.Namespace(
-        template="dev-code",
-        projectpath=project_path,
-        container_folder=None,
-        timeout=300,
-        dry_run=False,
-    )
-    cmd_open(open_args)
+        subprocess.run(["code", template_root])
+    else:
+        for search_dir in resolve_template_search_path():
+            if os.path.isdir(search_dir):
+                subprocess.run(["code", search_dir])
+                return
+        logger.error(
+            "no template directory found — run 'devcode init' or 'devcode new <name>' to get started"
+        )
+        sys.exit(1)
 
 
 def cmd_init(args) -> None:
@@ -624,17 +631,17 @@ def cmd_init(args) -> None:
         logger.error("built-in template 'dev-code' not found — packaging error")
         sys.exit(1)
 
-    template_dir = resolve_template_dir()
-    dest = os.path.join(template_dir, "dev-code")
+    write_dir = _write_template_dir()
+    dest = os.path.join(write_dir, "dev-code")
 
     if os.path.exists(dest):
         print(f"Skipped 'dev-code': already exists at {dest}")
         return
 
     try:
-        os.makedirs(template_dir, exist_ok=True)
+        os.makedirs(write_dir, exist_ok=True)
     except OSError as e:
-        logger.error("cannot create template dir %s: %s", template_dir, e)
+        logger.error("cannot create template dir %s: %s", write_dir, e)
         sys.exit(1)
 
     try:
@@ -648,55 +655,38 @@ def cmd_init(args) -> None:
 
 def cmd_list(args) -> None:
     """List available templates."""
-    # Collect built-ins
-    builtins = []
-    module_dir = os.path.dirname(os.path.abspath(__file__))
-    builtin_base = os.path.join(module_dir, "dev_code_templates")
-    if os.path.isdir(builtin_base):
-        for name in sorted(os.listdir(builtin_base)):
-            p = os.path.join(builtin_base, name)
-            if os.path.isdir(p):
-                builtins.append((name, p))
-
-    # Collect user templates
-    template_dir = resolve_template_dir()
-    user = []
-    if os.path.isdir(template_dir):
-        for name in sorted(os.listdir(template_dir)):
-            p = os.path.join(template_dir, name)
-            if os.path.isdir(p):
-                user.append((name, p))
+    search_dirs = resolve_template_search_path()
 
     if not args.long:
-        for name, _ in builtins:
+        names = _list_template_names()
+        for name in names:
             print(name)
-        for name, _ in user:
-            print(name)
-        if not user and not builtins:
-            print("(no templates — run 'devcode init' to get started)")
-        elif not user:
-            print("(no user templates — run 'devcode init' to get started)")
+        if not names:
+            print("(no templates — run 'devcode init' or 'devcode new <name>' to get started)")
         return
 
-    # --long output
-    print(f"Template dir: {template_dir}")
-    print()
-
-    all_names = [n for n, _ in builtins] + [n for n, _ in user]
-    col_w = max((len(n) for n in all_names), default=8) + 2
-
-    if builtins:
-        print("BUILT-IN")
-        for name, path in builtins:
-            print(f"  {name:<{col_w}}{path}")
+    # --long output: one section per search dir
+    any_printed = False
+    for search_dir in search_dirs:
+        if not os.path.isdir(search_dir):
+            logger.debug("template search dir not found, skipping: %s", search_dir)
+            continue
+        templates = [
+            name for name in sorted(os.listdir(search_dir))
+            if _is_valid_template(os.path.join(search_dir, name))
+        ]
+        print(search_dir)
+        if templates:
+            col_w = max(len(n) for n in templates) + 2
+            for name in templates:
+                print(f"  {name:<{col_w}}{os.path.join(search_dir, name)}")
+        else:
+            print("  (no templates)")
         print()
+        any_printed = True
 
-    if user:
-        print("USER")
-        for name, path in user:
-            print(f"  {name:<{col_w}}{path}")
-    else:
-        print("  (no user templates — run 'devcode init' to get started)")
+    if not any_printed:
+        print("(no template directories found — run 'devcode init' or 'devcode new <name>' to get started)")
 
 
 def _template_name_from_config(config_path: str) -> str:
