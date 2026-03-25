@@ -111,10 +111,10 @@ Default location:
 ~/.local/share/dev-code/templates/
 ```
 
-Override with:
+Override with a colon-separated search path (first entry is the write directory):
 
 ```
-$DEVCODE_TEMPLATE_DIR
+$DEVCODE_TEMPLATE_PATH=/my/templates:/shared/team/templates
 ```
 
 ---
@@ -153,8 +153,8 @@ Pass `-v` / `--verbose` before the subcommand to enable debug output (e.g. `devc
 | `devcode open <template> <path>` | Open a project using a template name or path to a devcontainer |
 | `devcode init`                   | Seed the default template                                      |
 | `devcode new <name> [base]`      | Create a new template                                          |
-| `devcode edit [template]`        | Edit a template                                                |
-| `devcode list [--long]`          | List templates                                                 |
+| `devcode edit [template]`        | Open a template directory in VS Code                           |
+| `devcode list [--long]`          | List templates (`--long` shows one section per search dir)     |
 | `devcode ps [-a] [-i]`           | List containers (`-a` includes stopped, `-i` interactive mode) |
 | `devcode completion <shell>`     | Generate shell completion                                      |
 
