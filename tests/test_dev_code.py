@@ -546,9 +546,10 @@ class TestMain(unittest.TestCase):
 
     def test_code_not_on_path_exits(self):
         with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
-            with patch("shutil.which", return_value=None):
-                with self.assertRaises(SystemExit):
-                    devcode.main()
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("shutil.which", return_value=None):
+                    with self.assertRaises(SystemExit):
+                        devcode.main()
 
     def test_launches_vscode_with_folder_uri(self):
         launched = []
@@ -558,9 +559,10 @@ class TestMain(unittest.TestCase):
 
         with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch.object(devcode, "run_post_launch"):
-                        devcode.main()
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("subprocess.Popen", side_effect=fake_popen):
+                        with patch.object(devcode, "run_post_launch"):
+                            devcode.main()
 
         self.assertEqual(len(launched), 1)
         self.assertEqual(launched[0][0], "code")
@@ -575,9 +577,10 @@ class TestMain(unittest.TestCase):
 
         with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch.object(devcode, "run_post_launch"):
-                        devcode.main()
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("subprocess.Popen", side_effect=fake_popen):
+                        with patch.object(devcode, "run_post_launch"):
+                            devcode.main()
 
         self.assertIn("/workspaces/myproject", launched[0][2])
 
@@ -589,9 +592,10 @@ class TestMain(unittest.TestCase):
 
         with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject", "--container-folder", "/workspace/custom"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch("subprocess.Popen", side_effect=fake_popen):
-                    with patch.object(devcode, "run_post_launch"):
-                        devcode.main()
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("subprocess.Popen", side_effect=fake_popen):
+                        with patch.object(devcode, "run_post_launch"):
+                            devcode.main()
 
         self.assertIn("/workspace/custom", launched[0][2])
 
@@ -602,9 +606,10 @@ class TestMain(unittest.TestCase):
 
         with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject", "--timeout", "42"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch("subprocess.Popen", return_value=MagicMock()):
-                    with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
-                        devcode.main()
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("subprocess.Popen", return_value=MagicMock()):
+                        with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+                            devcode.main()
 
         self.assertEqual(captured["timeout"], 42)
 
@@ -615,11 +620,57 @@ class TestMain(unittest.TestCase):
 
         with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
             with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch("subprocess.Popen", return_value=MagicMock()):
-                    with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
-                        devcode.main()
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("subprocess.Popen", return_value=MagicMock()):
+                        with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+                            devcode.main()
 
         self.assertEqual(captured["timeout"], 300)
+
+
+class TestGitSubdirGuard(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        tpl = os.path.join(self.tmpdir, "claude", ".devcontainer")
+        os.makedirs(tpl)
+        open(os.path.join(tpl, "devcontainer.json"), "w").close()
+        self.env_patch = patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": self.tmpdir})
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_subdir_of_git_repo_exits(self):
+        """Guard fires when git root differs from project_path."""
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/repo/subproject"]):
+            with patch.object(devcode, "_git_repo_root", return_value="/repo"):
+                with self.assertRaises(SystemExit):
+                    devcode.main()
+
+    def test_project_is_git_root_does_not_exit(self):
+        """Guard does not fire when project_path IS the git root."""
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/repo"]):
+            with patch.object(devcode, "_git_repo_root", return_value="/repo"):
+                with patch("shutil.which", return_value="/usr/bin/code"):
+                    with patch("subprocess.Popen", return_value=MagicMock()):
+                        with patch.object(devcode, "run_post_launch"):
+                            devcode.main()  # must not raise
+
+    def test_not_in_git_repo_does_not_exit(self):
+        """Guard does not fire when _git_repo_root returns None."""
+        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("shutil.which", return_value="/usr/bin/code"):
+                    with patch("subprocess.Popen", return_value=MagicMock()):
+                        with patch.object(devcode, "run_post_launch"):
+                            devcode.main()  # must not raise
+
+    def test_git_not_available_does_not_exit(self):
+        """_git_repo_root returns None when git is unavailable (OSError)."""
+        with patch("devcode.subprocess.run", side_effect=OSError("git not found")):
+            result = devcode._git_repo_root("/some/path")
+        self.assertIsNone(result)
 
 
 class TestListDirChildren(unittest.TestCase):

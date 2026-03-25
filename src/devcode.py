@@ -490,6 +490,20 @@ def run_post_launch(config_file: str, project_path: str, timeout: int) -> None:
         _process_entry(container_id, entry, cli_used, idx, config_dir)
 
 
+def _git_repo_root(path: str) -> str | None:
+    """Return the git repository root for path, or None if not a git repo or git unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return None
+    except OSError:
+        return None
+
+
 def cmd_open(args) -> None:
     """open subcommand: open a project in VS Code using a devcontainer template."""
     config_file = resolve_template(args.template)
@@ -498,6 +512,17 @@ def cmd_open(args) -> None:
     if project_path == "/":
         logger.error("projectpath must not resolve to /")
         sys.exit(1)
+
+    git_root = _git_repo_root(project_path)
+    if git_root is not None:
+        if os.path.normcase(os.path.realpath(git_root)) != os.path.normcase(os.path.realpath(project_path)):
+            logger.error(
+                "projectpath '%s' is a subdirectory of a git repository rooted at '%s'.\n"
+                "VS Code devcontainer would mount '%s' instead of '%s', causing \"Workspace does not exist\".\n"
+                "Use the git root as projectpath, or restructure so the project root is its own repository.",
+                project_path, git_root, git_root, project_path,
+            )
+            sys.exit(1)
 
     container_folder = args.container_folder or f"/workspaces/{os.path.basename(project_path)}"
     uri = build_devcontainer_uri(project_path, config_file, container_folder)
