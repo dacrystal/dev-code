@@ -342,6 +342,18 @@ def _substitute_env_vars(s: str):
     return re.sub(r"\$\{localEnv:([^}]+)\}", lambda m: os.environ[m.group(1)], s)
 
 
+def _expand_source_path(source: str, config_dir: str) -> str:
+    """Strip /. suffix, resolve relative paths against config_dir, restore /. suffix."""
+    dot_expand = source.endswith("/.")
+    if dot_expand:
+        source = source[:-2] or "/"
+    if not os.path.isabs(source):
+        source = os.path.abspath(os.path.join(config_dir, source))
+    if dot_expand:
+        source += "/."
+    return source
+
+
 def _docker_run(cmd: list, label: str) -> bool:
     """Run a full docker command list. Logs warning and returns False on failure."""
     result = subprocess.run(cmd, capture_output=True)
@@ -380,15 +392,7 @@ def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, con
             return
         source = resolved
 
-    dot_expand = source.endswith("/.")
-    if dot_expand:
-        source = source[:-2]
-        if not source:
-            source = "/"  # source was "/." — strip of 2-char string leaves empty; treat as root
-    if not os.path.isabs(source):
-        source = os.path.abspath(os.path.join(config_dir, source))
-    if dot_expand:
-        source = source + "/."
+    source = _expand_source_path(source, config_dir)
 
     # Step 2: Source expansion for dir-contents (source/.)
     if source.endswith("/."):
@@ -564,23 +568,16 @@ def _cmd_open_dry_run(config_file: str, project_path: str, uri: str) -> None:
 
         # Env var substitution
         if not cli_used:
-            unset_vars = [m.group(1) for m in re.finditer(r"\$\{localEnv:([^}]+)\}", source)
-                          if not os.environ.get(m.group(1))]
-            if unset_vars:
-                logger.warning("entry %d: env var unset: %s", idx, ", ".join(unset_vars))
-                print(f"  [{idx}] <unset: {unset_vars[0]}> → {target}")
+            resolved = _substitute_env_vars(source)
+            if resolved is None:
+                unset = [m.group(1) for m in re.finditer(r"\$\{localEnv:([^}]+)\}", source)
+                         if not os.environ.get(m.group(1))]
+                logger.warning("entry %d: env var unset: %s", idx, ", ".join(unset))
+                print(f"  [{idx}] <unset: {unset[0] if unset else '?'}> → {target}")
                 continue
-            source = re.sub(r"\$\{localEnv:([^}]+)\}", lambda m: os.environ[m.group(1)], source)
+            source = resolved
 
-        # Relative path resolution
-        dot_expand = source.endswith("/.")
-        if dot_expand:
-            source = source[:-2] or "/"
-        if not os.path.isabs(source):
-            source = os.path.abspath(os.path.join(config_dir, source))
-        if dot_expand:
-            source += "/."
-
+        source = _expand_source_path(source, config_dir)
         annotation = " [missing]" if not os.path.exists(source.rstrip("/.")) else ""
         print(f"  [{idx}] {source}{annotation} → {target}")
 
