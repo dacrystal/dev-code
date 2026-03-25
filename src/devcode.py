@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import importlib.metadata
 import json
 import logging
 import os
@@ -881,7 +882,13 @@ class _BannerParser(argparse.ArgumentParser):
 
 
 def main():
+    try:
+        _version = importlib.metadata.version("dev-code")
+    except importlib.metadata.PackageNotFoundError:
+        _version = "(dev)"
+
     parser = _BannerParser(prog="devcode")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_version}")
     parser.add_argument("-v", "--verbose", action="store_true")
     subparsers = parser.add_subparsers(dest="subcommand")
 
