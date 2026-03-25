@@ -216,6 +216,196 @@ class TestResolveTemplate(unittest.TestCase):
                     with self.assertRaises(SystemExit):
                         devcode.resolve_template("no-such-template")
 
+    def test_resolves_file_path_when_no_template(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "devcontainer.json")
+            open(cfg, "w").close()
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d + "_templates"}):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                    result = devcode.resolve_template(cfg)
+        self.assertEqual(result, cfg)
+
+    def test_resolves_directory_path_when_no_template(self):
+        with tempfile.TemporaryDirectory() as d:
+            sub = os.path.join(d, ".devcontainer")
+            os.makedirs(sub)
+            cfg = os.path.join(sub, "devcontainer.json")
+            open(cfg, "w").close()
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d + "_templates"}):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                    result = devcode.resolve_template(d)
+        self.assertEqual(result, cfg)
+
+    def test_dot_slash_prefix_resolves_as_path_not_template(self):
+        """./mydev resolves as path even if a template named mydev exists."""
+        with tempfile.TemporaryDirectory() as d:
+            tpath = os.path.join(d, "templates", "mydev", ".devcontainer")
+            os.makedirs(tpath)
+            open(os.path.join(tpath, "devcontainer.json"), "w").close()
+            local = os.path.join(d, "mydev", ".devcontainer")
+            os.makedirs(local)
+            local_cfg = os.path.join(local, "devcontainer.json")
+            open(local_cfg, "w").close()
+            old_cwd = os.getcwd()
+            os.chdir(d)
+            try:
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": os.path.join(d, "templates")}):
+                    with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                        result = devcode.resolve_template("./mydev")
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(result, local_cfg)
+
+    def test_absolute_path_resolves_as_path_not_template(self):
+        """An absolute path resolves as path even if its basename matches a template."""
+        with tempfile.TemporaryDirectory() as d:
+            tpath = os.path.join(d, "templates", "mydev", ".devcontainer")
+            os.makedirs(tpath)
+            open(os.path.join(tpath, "devcontainer.json"), "w").close()
+            local = os.path.join(d, "mydev", ".devcontainer")
+            os.makedirs(local)
+            local_cfg = os.path.join(local, "devcontainer.json")
+            open(local_cfg, "w").close()
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": os.path.join(d, "templates")}):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                    result = devcode.resolve_template(os.path.join(d, "mydev"))
+        self.assertEqual(result, local_cfg)
+
+    def test_ambiguity_warns_and_uses_template(self):
+        with tempfile.TemporaryDirectory() as d:
+            dirname = os.path.basename(d)
+            tpath = os.path.join(d + "_templates", dirname, ".devcontainer")
+            os.makedirs(tpath)
+            template_cfg = os.path.join(tpath, "devcontainer.json")
+            open(template_cfg, "w").close()
+            local = os.path.join(d, ".devcontainer")
+            os.makedirs(local)
+            open(os.path.join(local, "devcontainer.json"), "w").close()
+            old_cwd = os.getcwd()
+            os.chdir(os.path.dirname(d))
+            try:
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d + "_templates"}):
+                    with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                        with self.assertLogs("devcode", level="WARNING") as cm:
+                            result = devcode.resolve_template(dirname)
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(result, template_cfg)
+        self.assertTrue(any("matches both" in line for line in cm.output))
+        self.assertTrue(any("Use './" in line for line in cm.output))
+
+    def test_exits_with_wrong_filename_in_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "custom.json")
+            open(cfg, "w").close()
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d + "_t"}):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                    with self.assertRaises(SystemExit):
+                        devcode.resolve_template(cfg)
+
+    def test_exits_when_path_prefix_dir_has_no_devcontainer(self):
+        with tempfile.TemporaryDirectory() as d:
+            empty_dir = os.path.join(d, "myproject")
+            os.makedirs(empty_dir)
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d + "_t"}):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                    with self.assertRaises(SystemExit):
+                        devcode.resolve_template(empty_dir)
+
+    def test_exits_when_path_prefix_but_path_not_found(self):
+        with tempfile.TemporaryDirectory() as d:
+            nonexistent = os.path.join(d, "nonexistent")
+            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_DIR": d + "_t"}):
+                with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
+                    with self.assertLogs("devcode", level="ERROR") as cm:
+                        with self.assertRaises(SystemExit):
+                            devcode.resolve_template(nonexistent)
+            self.assertTrue(any("path not found" in line for line in cm.output))
+
+
+class TestResolveAsPath(unittest.TestCase):
+    def test_valid_file_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "devcontainer.json")
+            open(cfg, "w").close()
+            result = devcode._resolve_as_path(cfg)
+        self.assertEqual(result, cfg)
+
+    def test_file_wrong_name_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "custom.json")
+            open(cfg, "w").close()
+            result = devcode._resolve_as_path(cfg)
+        self.assertIsNone(result)
+
+    def test_directory_with_devcontainer_subdir(self):
+        with tempfile.TemporaryDirectory() as d:
+            sub = os.path.join(d, ".devcontainer")
+            os.makedirs(sub)
+            cfg = os.path.join(sub, "devcontainer.json")
+            open(cfg, "w").close()
+            result = devcode._resolve_as_path(d)
+        self.assertEqual(result, cfg)
+
+    def test_directory_with_bare_devcontainer_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "devcontainer.json")
+            open(cfg, "w").close()
+            result = devcode._resolve_as_path(d)
+        self.assertEqual(result, cfg)
+
+    def test_directory_no_devcontainer_json_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = devcode._resolve_as_path(d)
+        self.assertIsNone(result)
+
+    def test_nonexistent_path_returns_none(self):
+        result = devcode._resolve_as_path("/nonexistent/path/that/does/not/exist")
+        self.assertIsNone(result)
+
+    def test_tilde_expansion(self):
+        home = os.path.expanduser("~")
+        with tempfile.TemporaryDirectory(dir=home) as d:
+            cfg = os.path.join(d, "devcontainer.json")
+            open(cfg, "w").close()
+            rel = "~/" + os.path.relpath(d, home)
+            result = devcode._resolve_as_path(rel)
+        self.assertEqual(result, cfg)
+
+    def test_directory_prefers_subdir_over_bare(self):
+        with tempfile.TemporaryDirectory() as d:
+            sub = os.path.join(d, ".devcontainer")
+            os.makedirs(sub)
+            subdir_cfg = os.path.join(sub, "devcontainer.json")
+            open(subdir_cfg, "w").close()
+            bare_cfg = os.path.join(d, "devcontainer.json")
+            open(bare_cfg, "w").close()
+            result = devcode._resolve_as_path(d)
+        self.assertEqual(result, subdir_cfg)
+
+
+class TestHasPathPrefix(unittest.TestCase):
+    def test_dot_slash(self):
+        self.assertTrue(devcode._has_path_prefix("./foo"))
+
+    def test_dot_dot_slash(self):
+        self.assertTrue(devcode._has_path_prefix("../foo"))
+
+    def test_absolute(self):
+        self.assertTrue(devcode._has_path_prefix("/foo/bar"))
+
+    def test_tilde(self):
+        self.assertTrue(devcode._has_path_prefix("~/foo"))
+
+    def test_dot_alone(self):
+        self.assertTrue(devcode._has_path_prefix("."))
+
+    def test_plain_name(self):
+        self.assertFalse(devcode._has_path_prefix("mydev"))
+
+    def test_plain_name_with_dash(self):
+        self.assertFalse(devcode._has_path_prefix("my-template"))
+
 
 class TestMain(unittest.TestCase):
     def setUp(self):

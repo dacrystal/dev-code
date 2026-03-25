@@ -150,7 +150,7 @@ Pass `-v` / `--verbose` before the subcommand to enable debug output (e.g. `devc
 
 | Command                          | Description                                                    |
 | -------------------------------- | -------------------------------------------------------------- |
-| `devcode open <template> <path>` | Open a project using a template                                |
+| `devcode open <template> <path>` | Open a project using a template name or path to a devcontainer |
 | `devcode init`                   | Seed the default template                                      |
 | `devcode new <name> [base]`      | Create a new template                                          |
 | `devcode edit [template]`        | Edit a template                                                |
@@ -177,8 +177,9 @@ Select a container to reopen its project in VS Code.
 
 **`open`**
 
-| Flag | Default | Description |
-| ---- | ------- | ----------- |
+| Flag / Arg | Default | Description |
+| ---------- | ------- | ----------- |
+| `<template>` | — | Template name, or a path to a `devcontainer.json` file / directory containing one. Paths must start with `./`, `../`, `/`, or `~/`. If a plain name matches both a template and a local directory, the template wins (with a warning). |
 | `--dry-run` | — | Print resolved config path, URI, and copy plan without executing anything. |
 | `--container-folder <path>` | `/workspaces/<project-name>` | Override the mount path inside the container. |
 | `--timeout <seconds>` | `300` | Seconds to wait for the container to start before aborting post-launch steps. |
