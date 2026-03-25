@@ -338,7 +338,7 @@ class TestResolveTemplate(unittest.TestCase):
                         result = devcode.resolve_template("./mydev")
             finally:
                 os.chdir(old_cwd)
-        self.assertEqual(result, os.path.realpath(local_cfg))
+        self.assertEqual(os.path.realpath(result), os.path.realpath(local_cfg))
 
     def test_absolute_path_resolves_as_path_not_template(self):
         """An absolute path resolves as path even if its basename matches a template."""
