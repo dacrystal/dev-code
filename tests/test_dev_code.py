@@ -165,26 +165,26 @@ class TestResolveTemplateSearchPath(unittest.TestCase):
             self.assertEqual(devcode.resolve_template_search_path(), ["/a/b"])
 
     def test_multiple_paths(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": "/a:/b:/c"})
+        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": os.pathsep.join(["/a", "/b", "/c"])})
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b", "/c"])
 
     def test_empty_entries_skipped(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": "/a::/b:"})
+        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": f"/a{os.pathsep}{os.pathsep}/b{os.pathsep}"})
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b"])
 
     def test_all_empty_entries_falls_back_to_xdg(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": ":::", "XDG_DATA_HOME": "/xdg"})
+        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": os.pathsep * 3, "XDG_DATA_HOME": "/xdg"})
         with patch.dict(os.environ, env, clear=True):
             result = devcode.resolve_template_search_path()
-        self.assertEqual(result, ["/xdg/dev-code/templates"])
+        self.assertEqual(result, [os.path.join("/xdg", "dev-code", "templates")])
 
     def test_unset_uses_xdg_data_home(self):
         env = self._clean_env({"XDG_DATA_HOME": "/xdg"})
         with patch.dict(os.environ, env, clear=True):
             result = devcode.resolve_template_search_path()
-        self.assertEqual(result, ["/xdg/dev-code/templates"])
+        self.assertEqual(result, [os.path.join("/xdg", "dev-code", "templates")])
 
     def test_unset_uses_default_xdg(self):
         env = self._clean_env()
@@ -194,7 +194,7 @@ class TestResolveTemplateSearchPath(unittest.TestCase):
 
 
     def test_write_template_dir_returns_first_entry(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": "/first:/second"})
+        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": os.pathsep.join(["/first", "/second"])})
         with patch.dict(os.environ, env, clear=True):
             self.assertEqual(devcode._write_template_dir(), "/first")
 
@@ -338,7 +338,7 @@ class TestResolveTemplate(unittest.TestCase):
                         result = devcode.resolve_template("./mydev")
             finally:
                 os.chdir(old_cwd)
-        self.assertEqual(result, local_cfg)
+        self.assertEqual(result, os.path.realpath(local_cfg))
 
     def test_absolute_path_resolves_as_path_not_template(self):
         """An absolute path resolves as path even if its basename matches a template."""
@@ -436,7 +436,7 @@ class TestResolveTemplate(unittest.TestCase):
                 os.makedirs(tpath)
                 cfg = os.path.join(tpath, "devcontainer.json")
                 open(cfg, "w").close()
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": f"{d1}:{d2}"}):
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
                     result = devcode.resolve_template("mytemplate")
         self.assertEqual(result, cfg)
 
@@ -1109,7 +1109,7 @@ class TestCmdInit(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d1:
                 with tempfile.TemporaryDirectory() as d2:
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": f"{d1}:{d2}"}):
+                        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
                             args = argparse.Namespace(subcommand="init", verbose=False)
                             devcode.cmd_init(args)
                     self.assertTrue(os.path.isdir(os.path.join(d1, "dev-code")))
@@ -1159,7 +1159,7 @@ class TestCmdList(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d2:
                 self._make_template(d1, "shared")
                 self._make_template(d2, "shared")
-                lines = self._run_list(f"{d1}:{d2}")
+                lines = self._run_list(os.pathsep.join([d1, d2]))
         self.assertEqual(lines.count("shared"), 1)
 
     def test_long_shows_one_section_per_dir(self):
@@ -1167,7 +1167,7 @@ class TestCmdList(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d2:
                 self._make_template(d1, "alpha")
                 self._make_template(d2, "beta")
-                lines = self._run_list(f"{d1}:{d2}", long=True)
+                lines = self._run_list(os.pathsep.join([d1, d2]), long=True)
         combined = "\n".join(lines)
         self.assertIn(d1, combined)
         self.assertIn(d2, combined)
@@ -1184,7 +1184,7 @@ class TestCmdList(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._make_template(d, "mytemplate")
             nonexistent = os.path.join(d, "no-such-dir")
-            lines = self._run_list(f"{d}:{nonexistent}", long=True)
+            lines = self._run_list(os.pathsep.join([d, nonexistent]), long=True)
         combined = "\n".join(lines)
         self.assertNotIn(nonexistent, combined)
 
@@ -1285,7 +1285,7 @@ class TestCmdNew(unittest.TestCase):
                 open(os.path.join(base, "devcontainer.json"), "w").close()
                 args = MagicMock(subcommand="new", verbose=False, base="mybase", edit=False)
                 args.name = "myapp"
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": f"{d1}:{d2}"}):
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
                     devcode.cmd_new(args)
                 # writes to first dir
                 self.assertTrue(os.path.isdir(os.path.join(d1, "myapp")))
@@ -1313,7 +1313,7 @@ class TestCmdEdit(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d2:
                 nonexistent = "/nonexistent/path"
                 args = MagicMock(subcommand="edit", verbose=False, template=None)
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": f"{nonexistent}:{d1}:{d2}"}):
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([nonexistent, d1, d2])}):
                     with patch("subprocess.run") as mock_run:
                         devcode.cmd_edit(args)
                 mock_run.assert_called_once_with(["code", d1])
@@ -1323,7 +1323,7 @@ class TestCmdEdit(unittest.TestCase):
             with tempfile.TemporaryDirectory() as d2:
                 root = self._make_template(d2, "mytemplate")
                 args = MagicMock(subcommand="edit", verbose=False, template="mytemplate")
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": f"{d1}:{d2}"}):
+                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
                     with patch("subprocess.run") as mock_run:
                         devcode.cmd_edit(args)
                 mock_run.assert_called_once_with(["code", root])
@@ -1337,7 +1337,7 @@ class TestCmdEdit(unittest.TestCase):
 
     def test_no_arg_no_existing_dir_exits(self):
         args = MagicMock(subcommand="edit", verbose=False, template=None)
-        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": "/nonexistent/a:/nonexistent/b"}):
+        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join(["/nonexistent/a", "/nonexistent/b"])}):
             with self.assertRaises(SystemExit):
                 devcode.cmd_edit(args)
 

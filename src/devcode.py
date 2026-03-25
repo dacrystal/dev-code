@@ -97,7 +97,7 @@ def resolve_template_search_path() -> list[str]:
     default = os.path.join(xdg, "dev-code", "templates")
     if not new_var:
         return [default]
-    dirs = [d for d in new_var.split(":") if d]
+    dirs = [d for d in new_var.split(os.pathsep) if d]
     return dirs if dirs else [default]
 
 
@@ -223,6 +223,8 @@ def _has_path_prefix(p: str) -> bool:
     """
     if p.startswith("~"):
         p = str(Path(p).expanduser())
+    if os.path.isabs(p):
+        return True
     parents = Path(p).parents
     return not len(parents) or p.startswith(str(parents[-1]))
 
