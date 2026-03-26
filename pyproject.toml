@@ -18,6 +18,11 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 
+[project.urls]
+"Homepage" = "https://dacrystal.github.io/dev-code/"
+"Source Code" = "https://github.com/dacrystal/dev-code"
+"Issues" = "https://github.com/dacrystal/dev-code/issues"
+
 [project.scripts]
 devcode = "devcode:main"
 
