@@ -645,50 +645,11 @@ def cmd_new(args) -> None:
 
 def cmd_edit(args) -> None:
     """Open a template directory directly in VS Code for editing."""
-    if args.template is not None:
-        template_root = _find_template_in_search_path(args.template)
-        if template_root is None:
-            logger.error("template not found: %s", args.template)
-            sys.exit(1)
-        subprocess.run(["code", template_root])
-    else:
-        for search_dir in resolve_template_search_path():
-            if os.path.isdir(search_dir):
-                subprocess.run(["code", search_dir])
-                return
-        logger.error(
-            "no template directory found — run 'devcode init' or 'devcode new <name>' to get started"
-        )
+    template_root = _find_template_in_search_path(args.template)
+    if template_root is None:
+        logger.error("template not found: %s", args.template)
         sys.exit(1)
-
-
-def cmd_init(args) -> None:
-    """Seed the built-in dev-code template into the user template dir."""
-    builtin = get_builtin_template_path("dev-code")
-    if builtin is None:
-        logger.error("built-in template 'dev-code' not found — packaging error")
-        sys.exit(1)
-
-    write_dir = _write_template_dir()
-    dest = os.path.join(write_dir, "dev-code")
-
-    if os.path.exists(dest):
-        print(f"Skipped 'dev-code': already exists at {dest}")
-        return
-
-    try:
-        os.makedirs(write_dir, exist_ok=True)
-    except OSError as e:
-        logger.error("cannot create template dir %s: %s", write_dir, e)
-        sys.exit(1)
-
-    try:
-        shutil.copytree(builtin, dest)
-    except Exception as e:
-        logger.error("copy failed: %s", e)
-        sys.exit(1)
-
-    print(f"Copied built-in 'dev-code' to {dest}")
+    subprocess.run(["code", template_root])
 
 
 def cmd_list(args) -> None:
@@ -698,7 +659,7 @@ def cmd_list(args) -> None:
         for name in names:
             print(name)
         if not names:
-            print("(no templates — run 'devcode init' or 'devcode new <name>' to get started)")
+            print("(no templates)")
         return
 
     # --long output: flat table with NAME, DESC, PATH
@@ -720,7 +681,7 @@ def cmd_list(args) -> None:
         display.append((name, desc, _fmt_path(template_root)))
 
     if not display:
-        print("(no templates — run 'devcode init' or 'devcode new <name>' to get started)")
+        print("(no templates)")
         return
 
     headers = ("NAME", "DESC", "PATH")
@@ -837,13 +798,12 @@ def cmd_ps(args) -> None:
     cmd_open(open_args)
 
 
-_SUBCOMMANDS = ["open", "new", "edit", "init", "list", "ps", "completion"]
+_SUBCOMMANDS = ["open", "new", "edit", "list", "ps", "completion"]
 
 _SUBCOMMAND_FLAGS = {
     "open": ["--dry-run", "--container-folder", "--timeout"],
     "new": ["--edit"],
     "edit": [],
-    "init": [],
     "list": ["--long"],
     "ps": ["-a", "-i"],
     "completion": [],
@@ -937,9 +897,7 @@ def main():
     p_new.add_argument("--edit", action="store_true")
 
     p_edit = subparsers.add_parser("edit")
-    p_edit.add_argument("template", nargs="?")
-
-    subparsers.add_parser("init")
+    p_edit.add_argument("template")
 
     p_list = subparsers.add_parser("list")
     p_list.add_argument("--long", action="store_true")
@@ -962,7 +920,6 @@ def main():
         "open": cmd_open,
         "new": cmd_new,
         "edit": cmd_edit,
-        "init": cmd_init,
         "list": cmd_list,
         "ps": cmd_ps,
         "completion": cmd_completion,

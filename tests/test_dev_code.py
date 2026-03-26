@@ -1100,73 +1100,6 @@ class TestRunPostLaunch(unittest.TestCase):
         self.assertEqual(chown_calls, [], "chown must not run after failed cp")
 
 
-class TestCmdInit(unittest.TestCase):
-    def _run_init(self, template_dir):
-        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": template_dir}):
-            args = argparse.Namespace(subcommand="init", verbose=False)
-            devcode.cmd_init(args)
-
-    def test_copies_builtin_to_user_dir(self):
-        with tempfile.TemporaryDirectory() as pkg_dir:
-            # Set up fake built-in
-            builtin = os.path.join(pkg_dir, "dev_code_templates", "dev-code", ".devcontainer")
-            os.makedirs(builtin)
-            open(os.path.join(builtin, "devcontainer.json"), "w").close()
-            with tempfile.TemporaryDirectory() as user_dir:
-                dest_base = os.path.join(user_dir, "dev-code")
-                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                    self._run_init(user_dir)
-                self.assertTrue(os.path.isdir(dest_base))
-                self.assertTrue(os.path.exists(os.path.join(dest_base, ".devcontainer", "devcontainer.json")))
-
-    def test_skips_if_already_exists(self):
-        with tempfile.TemporaryDirectory() as pkg_dir:
-            builtin = os.path.join(pkg_dir, "dev_code_templates", "dev-code", ".devcontainer")
-            os.makedirs(builtin)
-            open(os.path.join(builtin, "devcontainer.json"), "w").close()
-            with tempfile.TemporaryDirectory() as user_dir:
-                existing = os.path.join(user_dir, "dev-code")
-                os.makedirs(existing)
-                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                    captured = []
-                    with patch("builtins.print", side_effect=lambda *a, **kw: captured.append(a[0])):
-                        self._run_init(user_dir)
-                self.assertTrue(any("Skipped" in s for s in captured))
-
-    def test_exits_when_builtin_not_found(self):
-        with tempfile.TemporaryDirectory() as user_dir:
-            with patch.object(devcode, "get_builtin_template_path", return_value=None):
-                with self.assertRaises(SystemExit):
-                    self._run_init(user_dir)
-
-    def test_creates_user_dir_if_missing(self):
-        with tempfile.TemporaryDirectory() as pkg_dir:
-            builtin = os.path.join(pkg_dir, "dev_code_templates", "dev-code", ".devcontainer")
-            os.makedirs(builtin)
-            open(os.path.join(builtin, "devcontainer.json"), "w").close()
-            with tempfile.TemporaryDirectory() as base:
-                user_dir = os.path.join(base, "new", "nested", "dir")  # doesn't exist yet
-                with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                    self._run_init(user_dir)
-                self.assertTrue(os.path.isdir(user_dir))
-                self.assertTrue(os.path.isdir(os.path.join(user_dir, "dev-code")))
-
-    def test_uses_write_template_dir(self):
-        """init writes to first search dir, not second."""
-        with tempfile.TemporaryDirectory() as pkg_dir:
-            builtin = os.path.join(pkg_dir, "dev_code_templates", "dev-code", ".devcontainer")
-            os.makedirs(builtin)
-            open(os.path.join(builtin, "devcontainer.json"), "w").close()
-            with tempfile.TemporaryDirectory() as d1:
-                with tempfile.TemporaryDirectory() as d2:
-                    with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
-                            args = argparse.Namespace(subcommand="init", verbose=False)
-                            devcode.cmd_init(args)
-                    self.assertTrue(os.path.isdir(os.path.join(d1, "dev-code")))
-                    self.assertFalse(os.path.isdir(os.path.join(d2, "dev-code")))
-
-
 class TestCmdList(unittest.TestCase):
     def _make_template(self, base_dir, name):
         p = os.path.join(base_dir, name, ".devcontainer")
@@ -1239,7 +1172,8 @@ class TestCmdList(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             lines = self._run_list(d, long=True)
         combined = "\n".join(str(l) for l in lines)
-        self.assertIn("devcode init", combined)
+        self.assertIn("(no templates)", combined)
+        self.assertNotIn("devcode init", combined)
 
     def test_long_ignores_nonexistent_dirs(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1250,11 +1184,12 @@ class TestCmdList(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertIn("mytemplate", "\n".join(lines))
 
-    def test_no_templates_shows_init_hint(self):
+    def test_no_templates_shows_empty_message(self):
         with tempfile.TemporaryDirectory() as d:
             lines = self._run_list(d)
         combined = "\n".join(str(l) for l in lines)
-        self.assertIn("devcode init", combined)
+        self.assertIn("(no templates)", combined)
+        self.assertNotIn("devcode init", combined)
 
     def test_long_desc_from_devcontainer_name(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1424,16 +1359,6 @@ class TestCmdEdit(unittest.TestCase):
                     devcode.cmd_edit(args)
             mock_run.assert_called_once_with(["code", root])
 
-    def test_no_arg_opens_first_existing_search_dir(self):
-        with tempfile.TemporaryDirectory() as d1:
-            with tempfile.TemporaryDirectory() as d2:
-                nonexistent = "/nonexistent/path"
-                args = MagicMock(subcommand="edit", verbose=False, template=None)
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([nonexistent, d1, d2])}):
-                    with patch("subprocess.run") as mock_run:
-                        devcode.cmd_edit(args)
-                mock_run.assert_called_once_with(["code", d1])
-
     def test_named_template_found_in_second_dir(self):
         with tempfile.TemporaryDirectory() as d1:
             with tempfile.TemporaryDirectory() as d2:
@@ -1451,20 +1376,14 @@ class TestCmdEdit(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     devcode.cmd_edit(args)
 
-    def test_no_arg_no_existing_dir_exits(self):
-        args = MagicMock(subcommand="edit", verbose=False, template=None)
-        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join(["/nonexistent/a", "/nonexistent/b"])}):
-            with self.assertRaises(SystemExit):
-                devcode.cmd_edit(args)
-
-    def test_no_arg_opens_empty_dir(self):
-        """An existing but empty template dir is a valid browse target."""
-        with tempfile.TemporaryDirectory() as d:
-            args = MagicMock(subcommand="edit", verbose=False, template=None)
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d}):
-                with patch("subprocess.run") as mock_run:
-                    devcode.cmd_edit(args)
-            mock_run.assert_called_once_with(["code", d])
+    def test_no_arg_is_argparse_error(self):
+        """edit requires a template argument; omitting it should exit with code 2."""
+        result = subprocess.run(
+            ["devcode", "edit"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
 
     def test_does_not_call_cmd_open(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1898,8 +1817,9 @@ class TestCmdComplete(unittest.TestCase):
 
     def test_completing_subcommand_returns_all_subcommands(self):
         result = self._run(1, ["devcode", ""])
-        for sub in ("open", "new", "edit", "init", "list", "ps", "completion"):
+        for sub in ("open", "new", "edit", "list", "ps", "completion"):
             self.assertIn(sub, result)
+        self.assertNotIn("init", result)
 
     def test_prefix_filters_subcommands(self):
         result = self._run(1, ["devcode", "op"])
@@ -1971,10 +1891,6 @@ class TestCmdComplete(unittest.TestCase):
     def test_list_partial_word_no_match_returns_empty(self):
         # list branch fires unconditionally; prefix filter removes --long when current_word="x"
         result = self._run(2, ["devcode", "list", "x"])
-        self.assertEqual(result, [])
-
-    def test_init_returns_empty(self):
-        result = self._run(2, ["devcode", "init", ""])
         self.assertEqual(result, [])
 
     def test_ps_returns_empty(self):
