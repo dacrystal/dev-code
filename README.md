@@ -10,6 +10,7 @@
   project · editor · container — simplified
 ```
 
+[![GitHub](https://img.shields.io/badge/github-dacrystal%2Fdev--code-blue?logo=github)](https://github.com/dacrystal/dev-code)
 [![Coverage](https://codecov.io/gh/dacrystal/dev-code/branch/main/graph/badge.svg)](https://codecov.io/gh/dacrystal/dev-code)
 [![PyPI version](https://img.shields.io/pypi/v/dev-code)](https://pypi.org/project/dev-code/)
 [![Python 3.10+](https://img.shields.io/pypi/pyversions/dev-code)](https://pypi.org/project/dev-code/)
