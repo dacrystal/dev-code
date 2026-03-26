@@ -1378,12 +1378,10 @@ class TestCmdEdit(unittest.TestCase):
 
     def test_no_arg_is_argparse_error(self):
         """edit requires a template argument; omitting it should exit with code 2."""
-        result = subprocess.run(
-            ["devcode", "edit"],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 2)
+        with self.assertRaises(SystemExit) as ctx:
+            with patch("sys.argv", ["devcode", "edit"]):
+                devcode.main()
+        self.assertEqual(ctx.exception.code, 2)
 
     def test_does_not_call_cmd_open(self):
         with tempfile.TemporaryDirectory() as d:
