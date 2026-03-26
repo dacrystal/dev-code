@@ -1171,7 +1171,14 @@ class TestCmdList(unittest.TestCase):
     def _make_template(self, base_dir, name):
         p = os.path.join(base_dir, name, ".devcontainer")
         os.makedirs(p, exist_ok=True)
-        open(os.path.join(p, "devcontainer.json"), "w").close()
+        with open(os.path.join(p, "devcontainer.json"), "w") as f:
+            f.write("{}")
+
+    def _make_template_with_name(self, base_dir, template_name, devcontainer_name):
+        p = os.path.join(base_dir, template_name, ".devcontainer")
+        os.makedirs(p, exist_ok=True)
+        with open(os.path.join(p, "devcontainer.json"), "w") as f:
+            json.dump({"name": devcontainer_name}, f)
 
     def _run_list(self, search_path, long=False):
         lines = []
@@ -1213,37 +1220,95 @@ class TestCmdList(unittest.TestCase):
                 lines = self._run_list(os.pathsep.join([d1, d2]))
         self.assertEqual(lines.count("shared"), 1)
 
-    def test_long_shows_one_section_per_dir(self):
+    def test_long_shows_header_and_rows(self):
         with tempfile.TemporaryDirectory() as d1:
             with tempfile.TemporaryDirectory() as d2:
-                self._make_template(d1, "alpha")
-                self._make_template(d2, "beta")
+                self._make_template_with_name(d1, "alpha", "Alpha Env")
+                self._make_template_with_name(d2, "beta", "Beta Env")
                 lines = self._run_list(os.pathsep.join([d1, d2]), long=True)
         combined = "\n".join(lines)
-        self.assertIn(d1, combined)
-        self.assertIn(d2, combined)
+        self.assertIn("NAME", combined)
+        self.assertIn("DESC", combined)
+        self.assertIn("PATH", combined)
         self.assertIn("alpha", combined)
         self.assertIn("beta", combined)
+        self.assertIn("Alpha Env", combined)
+        self.assertIn("Beta Env", combined)
 
     def test_long_no_templates_shows_hint(self):
         with tempfile.TemporaryDirectory() as d:
             lines = self._run_list(d, long=True)
         combined = "\n".join(str(l) for l in lines)
-        self.assertIn("(no templates)", combined)
+        self.assertIn("devcode init", combined)
 
-    def test_long_omits_nonexistent_dirs(self):
+    def test_long_ignores_nonexistent_dirs(self):
         with tempfile.TemporaryDirectory() as d:
             self._make_template(d, "mytemplate")
             nonexistent = os.path.join(d, "no-such-dir")
             lines = self._run_list(os.pathsep.join([d, nonexistent]), long=True)
-        combined = "\n".join(lines)
-        self.assertNotIn(nonexistent, combined)
+        # Header + 1 data row = 2 lines total
+        self.assertEqual(len(lines), 2)
+        self.assertIn("mytemplate", "\n".join(lines))
 
     def test_no_templates_shows_init_hint(self):
         with tempfile.TemporaryDirectory() as d:
             lines = self._run_list(d)
         combined = "\n".join(str(l) for l in lines)
         self.assertIn("devcode init", combined)
+
+    def test_long_desc_from_devcontainer_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._make_template_with_name(d, "mytemplate", "My Template")
+            lines = self._run_list(d, long=True)
+        self.assertEqual(len(lines), 2)  # header + 1 data row
+        self.assertIn("mytemplate", lines[1])
+        self.assertIn("My Template", lines[1])
+
+    def test_long_path_tilde_abbreviated(self):
+        home = os.path.expanduser("~")
+        with tempfile.TemporaryDirectory(dir=home) as d:
+            self._make_template(d, "mytemplate")
+            lines = self._run_list(d, long=True)
+        combined = "\n".join(lines)
+        self.assertIn("~", combined)
+        self.assertNotIn(home + os.sep + os.path.basename(d), combined)
+
+    def test_long_empty_desc_when_no_name_field(self):
+        with tempfile.TemporaryDirectory() as d:
+            # _make_template now writes {} — valid JSON with no "name" field
+            self._make_template(d, "mytemplate")
+            lines = self._run_list(d, long=True)
+        self.assertEqual(len(lines), 2)
+        data_row = lines[1]
+        self.assertIn("mytemplate", data_row)
+        # PATH appears in data row; no desc value between name and path
+        template_path = os.path.join(d, "mytemplate")
+        self.assertIn(template_path, data_row)
+
+    def test_long_malformed_json_shows_empty_desc(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "broken", ".devcontainer")
+            os.makedirs(p)
+            with open(os.path.join(p, "devcontainer.json"), "w") as f:
+                f.write("{ not valid json }")
+            lines = self._run_list(d, long=True)
+        self.assertEqual(len(lines), 2)  # header + 1 data row
+        data_row = lines[1]
+        self.assertIn("broken", data_row)
+        template_path = os.path.join(d, "broken")
+        self.assertIn(template_path, data_row)
+
+    def test_long_deduplication_first_match_wins(self):
+        with tempfile.TemporaryDirectory() as d1:
+            with tempfile.TemporaryDirectory() as d2:
+                self._make_template_with_name(d1, "shared", "First")
+                self._make_template_with_name(d2, "shared", "Second")
+                lines = self._run_list(os.pathsep.join([d1, d2]), long=True)
+        combined = "\n".join(lines)
+        self.assertIn("First", combined)
+        self.assertNotIn("Second", combined)
+        # Only one data row (header + 1)
+        self.assertEqual(len(lines), 2)
 
 
 class TestCmdNew(unittest.TestCase):

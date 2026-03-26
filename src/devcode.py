@@ -354,6 +354,19 @@ def _expand_source_path(source: str, config_dir: str) -> str:
     return source
 
 
+def _fmt_path(p: str) -> str:
+    """Abbreviate p with ~ when it starts with the home directory."""
+    home = os.path.expanduser("~")
+    if p == home or p.startswith(home + os.sep):
+        return "~" + p[len(home):]
+    return p
+
+
+def _fmt_row(r: tuple, widths: list) -> str:
+    """Left-justify each value in r to its column width, join with two spaces."""
+    return "  ".join(f"{v:<{widths[i]}}" for i, v in enumerate(r))
+
+
 def _docker_run(cmd: list, label: str) -> bool:
     """Run a full docker command list. Logs warning and returns False on failure."""
     result = subprocess.run(cmd, capture_output=True)
@@ -680,8 +693,6 @@ def cmd_init(args) -> None:
 
 def cmd_list(args) -> None:
     """List available templates."""
-    search_dirs = resolve_template_search_path()
-
     if not args.long:
         names = _list_template_names()
         for name in names:
@@ -690,28 +701,33 @@ def cmd_list(args) -> None:
             print("(no templates — run 'devcode init' or 'devcode new <name>' to get started)")
         return
 
-    # --long output: one section per search dir
-    any_printed = False
-    for search_dir in search_dirs:
-        if not os.path.isdir(search_dir):
-            logger.debug("template search dir not found, skipping: %s", search_dir)
+    # --long output: flat table with NAME, DESC, PATH
+    names = _list_template_names()
+    display = []
+    for name in names:
+        template_root = _find_template_in_search_path(name)
+        if template_root is None:
             continue
-        templates = [
-            name for name in sorted(os.listdir(search_dir))
-            if _is_valid_template(os.path.join(search_dir, name))
-        ]
-        print(search_dir)
-        if templates:
-            col_w = max(len(n) for n in templates) + 2
-            for name in templates:
-                print(f"  {name:<{col_w}}{os.path.join(search_dir, name)}")
-        else:
-            print("  (no templates)")
-        print()
-        any_printed = True
+        config_file = os.path.join(template_root, ".devcontainer", "devcontainer.json")
+        desc = ""
+        try:
+            data, _ = parse_devcontainer_json(config_file)
+            desc = data.get("name", "")
+        except (SystemExit, Exception):
+            # parse_devcontainer_json calls sys.exit(1) on bad JSON (raises SystemExit,
+            # not Exception); catch both so a malformed template doesn't abort the listing.
+            pass
+        display.append((name, desc, _fmt_path(template_root)))
 
-    if not any_printed:
-        print("(no template directories found — run 'devcode init' or 'devcode new <name>' to get started)")
+    if not display:
+        print("(no templates — run 'devcode init' or 'devcode new <name>' to get started)")
+        return
+
+    headers = ("NAME", "DESC", "PATH")
+    widths = [max(len(h), max((len(r[i]) for r in display), default=0)) for i, h in enumerate(headers)]
+    print(_fmt_row(headers, widths))
+    for row in display:
+        print(_fmt_row(row, widths))
 
 
 def _template_name_from_config(config_path: str) -> str:
@@ -754,27 +770,19 @@ def cmd_ps(args) -> None:
         print("no devcontainers" if args.all else "no running devcontainers")
         return
 
-    home = os.path.expanduser("~")
-
-    def fmt_path(p):
-        return "~" + p[len(home):] if p.startswith(home) else p
-
     # Build display rows: (num, cid, template, path, status)
     display = []
     for i, row in enumerate(rows, 1):
         cid, folder, config, status = row[0], row[1], row[2], row[3]
         template = _template_name_from_config(config) if config else "(unknown)"
-        display.append((str(i), cid[:12], template, fmt_path(folder), status))
+        display.append((str(i), cid[:12], template, _fmt_path(folder), status))
 
     headers = ("#", "CONTAINER ID", "TEMPLATE", "PROJECT PATH", "STATUS")
     widths = [max(len(h), max((len(r[i]) for r in display), default=0)) for i, h in enumerate(headers)]
 
-    def fmt_row(r):
-        return "  ".join(f"{v:<{widths[i]}}" for i, v in enumerate(r))
-
-    print(fmt_row(headers))
+    print(_fmt_row(headers, widths))
     for row in display:
-        print(fmt_row(row))
+        print(_fmt_row(row, widths))
 
     if not args.interactive:
         return
