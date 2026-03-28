@@ -748,7 +748,7 @@ def cmd_ps(args) -> None:
     if not args.interactive:
         return
 
-    choice = input(f"Open [1-{len(display)}]: ").strip()
+    choice = input(f"\nOpen [1-{len(display)}]: ").strip()
     try:
         idx = int(choice) - 1
         if not (0 <= idx < len(display)):
