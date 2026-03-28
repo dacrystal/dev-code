@@ -50,11 +50,11 @@ Typical Dev Container workflows involve:
 # Install
 pip install dev-code
 
-# Create default template
-devcode init
+# Open a project (auto-detects template from container history, or uses default)
+devcode open ~/projects/my-app
 
-# Open a project
-devcode open dev-code ~/projects/my-app
+# Open with an explicit template
+devcode open ~/projects/my-app dev-code
 
 # Reopen projects later
 devcode ps -a -i
@@ -81,14 +81,7 @@ Default location:
 ~/.local/share/dev-code/templates/
 ```
 
-Override search paths:
-
-```bash
-DEVCODE_TEMPLATE_PATH=/my/templates:/team/templates
-```
-
-* The first path is used for writes
-* Additional paths are read-only
+Override search paths via `settings.json` (see [Configuration](#configuration)).
 
 ---
 
@@ -105,14 +98,16 @@ DEVCODE_TEMPLATE_PATH=/my/templates:/team/templates
 ### devcode open
 
 ```bash
-devcode open <template> <path> [options]
+devcode open <path> [template] [options]
 ```
 
-Open a project using a template.
+Open a project in VS Code using a devcontainer template.
 
 #### Arguments
 
-* `<template>`
+* `<path>` — Project directory (must exist)
+
+* `[template]` *(optional)*
 
   * Template name, or
   * Path to a `devcontainer.json`, or
@@ -120,10 +115,12 @@ Open a project using a template.
 
   Paths must start with `./`, `../`, `/`, or `~/`.
 
-  If both a template and directory match, the template takes precedence and a warning is shown.
+  If both a template name and a local directory match, the template takes precedence and a warning is shown.
 
-* `<path>`
-  Project directory
+  **If omitted**, devcode auto-detects the template in this order:
+  1. Most recently running container for this project path (uses its stored config)
+  2. Most recently stopped container for this project path
+  3. `default_template` from `settings.json` (error if not set)
 
 #### Options
 
@@ -132,16 +129,6 @@ Open a project using a template.
 | `--dry-run`                 | —                       | Print resolved configuration and actions without executing |
 | `--container-folder <path>` | `/workspaces/<project>` | Container mount path                                       |
 | `--timeout <seconds>`       | `300`                   | Time to wait for container startup                         |
-
----
-
-### devcode init
-
-```bash
-devcode init
-```
-
-Creates the default template.
 
 ---
 
@@ -229,11 +216,42 @@ eval "$(devcode completion bash)"
 ## Typical Workflow
 
 ```bash
-devcode init
 devcode new python-dev
 devcode edit python-dev
-devcode open python-dev ~/projects/my-app
+devcode open ~/projects/my-app python-dev
 ```
+
+---
+
+## Configuration
+
+devcode reads `settings.json` from:
+
+```
+~/.config/dev-code/settings.json
+```
+
+Override the config directory:
+
+```bash
+DEVCODE_CONF_DIR=/custom/path devcode open ~/projects/my-app
+```
+
+The file is created automatically with defaults on first run.
+
+### settings.json
+
+```json
+{
+  "template_sources": ["~/.local/share/dev-code/templates"],
+  "default_template": "dev-code"
+}
+```
+
+| Key | Description |
+| --- | --- |
+| `template_sources` | Ordered list of template directories. First is the write target; rest are read-only. |
+| `default_template` | Template used when `devcode open` is called without a template argument and no container history is found. Error if unset. |
 
 ---
 
@@ -245,16 +263,7 @@ devcode open python-dev ~/projects/my-app
 ~/.local/share/dev-code/templates/
 ```
 
-### Custom Paths
-
-```bash
-DEVCODE_TEMPLATE_PATH=$HOME/my/templates:/team/shared/templates
-```
-
-Resolution order:
-
-1. First directory is the write target
-2. Remaining directories are used for lookup
+Configure additional paths via `template_sources` in `settings.json`.
 
 ---
 
@@ -348,8 +357,8 @@ Lists containers and allows reopening projects interactively.
 
 ## Internal Flow
 
-1. Resolve template
-2. Resolve project path
+1. Validate project path (must exist)
+2. Resolve template (explicit → container history → settings default)
 3. Launch VS Code Dev Container
 4. Apply file injection rules
 

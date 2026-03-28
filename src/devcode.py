@@ -25,6 +25,11 @@ BANNER = (
 
 KNOWN_CP_FIELDS = {"source", "target", "override", "owner", "group", "permissions"}
 
+_DEFAULT_SETTINGS = {
+    "template_sources": ["~/.local/share/dev-code/templates"],
+    "default_template": "dev-code",
+}
+
 _BASH_COMPLETION = """\
 # devcode bash completion
 # Requires bash 4.0+ (macOS ships bash 3.2; install bash 5 via Homebrew if needed).
@@ -90,15 +95,49 @@ def wsl_to_windows(path: str) -> str:
         raise RuntimeError(f"Failed to convert path with wslpath: {path}") from e
 
 
+def _conf_dir() -> str:
+    """Return the devcode config directory path."""
+    override = os.environ.get("DEVCODE_CONF_DIR")
+    if override:
+        return override
+    xdg_config = os.environ.get(
+        "XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config")
+    )
+    return os.path.join(xdg_config, "dev-code")
+
+
+def _load_settings() -> dict:
+    """Read settings.json, creating it with defaults if absent. Never raises."""
+    conf_dir = _conf_dir()
+    settings_path = os.path.join(conf_dir, "settings.json")
+    if not os.path.exists(settings_path):
+        try:
+            os.makedirs(conf_dir, exist_ok=True)
+            with open(settings_path, "w") as f:
+                json.dump(_DEFAULT_SETTINGS, f, indent=2)
+                f.write("\n")
+            logger.info("created default settings at %s", settings_path)
+        except OSError as e:
+            logger.warning("could not create settings file %s: %s", settings_path, e)
+        return dict(_DEFAULT_SETTINGS)
+    try:
+        with open(settings_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning("failed to load settings from %s: %s; using defaults", settings_path, e)
+        return dict(_DEFAULT_SETTINGS)
+
+
 def resolve_template_search_path() -> list[str]:
-    """Return ordered list of template search directories from DEVCODE_TEMPLATE_PATH."""
-    new_var = os.environ.get("DEVCODE_TEMPLATE_PATH")
-    xdg = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share"))
-    default = os.path.join(xdg, "dev-code", "templates")
-    if not new_var:
-        return [default]
-    dirs = [d for d in new_var.split(os.pathsep) if d]
-    return dirs if dirs else [default]
+    """Return ordered list of template search directories from settings.json."""
+    settings = _load_settings()
+    sources = settings.get("template_sources")
+    if not sources:
+        xdg = os.environ.get(
+            "XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")
+        )
+        return [os.path.join(xdg, "dev-code", "templates")]
+    return [os.path.expanduser(d) for d in sources if d]
 
 
 def _write_template_dir() -> str:
@@ -521,11 +560,47 @@ def _git_repo_root(path: str) -> str | None:
         return None
 
 
+def _find_container_config_for_project(project_path: str) -> str | None:
+    """Return config_file of most recently created container for project_path, or None.
+
+    Checks running containers first; falls back to all containers (stopped too).
+    """
+    label_value = wsl_to_windows(project_path) if is_wsl() else project_path
+    fmt = '{{.CreatedAt}}\t{{.Label "devcontainer.config_file"}}'
+
+    for extra_args in [[], ["-a"]]:
+        try:
+            result = subprocess.run(
+                ["docker", "container", "ls"] + extra_args + [
+                    "--filter", f"label=devcontainer.local_folder={label_value}",
+                    "--format", fmt,
+                ],
+                capture_output=True, text=True,
+            )
+        except OSError:
+            return None
+        if result.returncode != 0:
+            return None
+        rows = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 1)
+            if len(parts) == 2 and parts[1].strip():
+                rows.append((parts[0], parts[1].strip()))
+        if rows:
+            rows.sort(key=lambda r: r[0], reverse=True)
+            return rows[0][1]
+
+    return None
+
+
 def cmd_open(args) -> None:
     """open subcommand: open a project in VS Code using a devcontainer template."""
-    config_file = resolve_template(args.template)
-
     project_path = os.path.abspath(args.projectpath)
+
+    if not os.path.exists(project_path):
+        logger.error("projectpath not found: %s", args.projectpath)
+        sys.exit(1)
+
     if project_path == "/":
         logger.error("projectpath must not resolve to /")
         sys.exit(1)
@@ -540,6 +615,20 @@ def cmd_open(args) -> None:
                 project_path, git_root, git_root, project_path,
             )
             sys.exit(1)
+
+    if args.template:
+        config_file = resolve_template(args.template)
+    else:
+        config_file = _find_container_config_for_project(project_path)
+        if config_file is None:
+            settings = _load_settings()
+            default = settings.get("default_template", "")
+            if not default:
+                logger.error(
+                    "no template specified and no default_template configured in settings"
+                )
+                sys.exit(1)
+            config_file = resolve_template(default)
 
     container_folder = args.container_folder or f"/workspaces/{os.path.basename(project_path)}"
     uri = build_devcontainer_uri(project_path, config_file, container_folder)
@@ -841,7 +930,7 @@ def cmd_completion(args) -> None:
                 elif current_word.startswith("-"):
                     candidates = _SUBCOMMAND_FLAGS.get(subcommand, [])
                 else:
-                    if subcommand == "open" and cword_index == 2:
+                    if subcommand == "open" and cword_index == 3:
                         candidates = _list_template_names()
                     elif subcommand == "new" and cword_index == 3:
                         candidates = _list_template_names()
@@ -885,8 +974,8 @@ def main():
     subparsers = parser.add_subparsers(dest="subcommand")
 
     p_open = subparsers.add_parser("open")
-    p_open.add_argument("template")
     p_open.add_argument("projectpath")
+    p_open.add_argument("template", nargs="?")
     p_open.add_argument("--container-folder")
     p_open.add_argument("--timeout", type=int, default=300)
     p_open.add_argument("--dry-run", action="store_true", dest="dry_run")
