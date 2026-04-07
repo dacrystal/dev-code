@@ -20,7 +20,7 @@ Reusable Dev Containers for any project — without modifying the repository.
 
 ---
 
-![](assets/demo.gif "Demo gif")
+![](assets/demo.png "Demo gif")
 
 `devcode` is a CLI that opens any project in VS Code Dev Containers using reusable, local templates.
 
