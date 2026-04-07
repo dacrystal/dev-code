@@ -31,6 +31,13 @@ _DEFAULT_SETTINGS = {
     "default_template": "dev-code",
 }
 
+def _get_version() -> str:
+    try:
+        return importlib.metadata.version("dev-code")
+    except importlib.metadata.PackageNotFoundError:
+        return "(dev)"
+
+
 def _configure_logging(verbose: bool) -> None:
     """Configure the module logger. Guard prevents double-registration."""
     if logger.handlers:
@@ -675,7 +682,7 @@ def _complete_templates(ctx, param, incomplete):
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(package_name="dev-code", prog_name="devcode")
+@click.version_option(version=_get_version(), prog_name="devcode")
 @click.option(
     "-v", "--verbose",
     is_flag=True,
