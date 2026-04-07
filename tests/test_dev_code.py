@@ -274,7 +274,7 @@ class TestConfDir(unittest.TestCase):
                if k not in ("DEVCODE_CONF_DIR", "XDG_CONFIG_HOME")}
         env["XDG_CONFIG_HOME"] = "/xdg/config"
         with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(devcode._conf_dir(), "/xdg/config/dev-code")
+            self.assertEqual(devcode._conf_dir(), os.path.join("/xdg/config", "dev-code"))
 
     def test_falls_back_to_default_config_dir(self):
         env = {k: v for k, v in os.environ.items()
@@ -328,7 +328,7 @@ class TestResolveTemplateSearchPath(unittest.TestCase):
     def test_expands_tilde_in_sources(self):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["~/templates"]}):
             result = devcode.resolve_template_search_path()
-        self.assertTrue(result[0].startswith("/"))
+        self.assertTrue(os.path.isabs(result[0]))
         self.assertNotIn("~", result[0])
 
     def test_falls_back_to_xdg_data_home_when_no_sources(self):
@@ -337,7 +337,7 @@ class TestResolveTemplateSearchPath(unittest.TestCase):
         with patch.object(devcode, "_load_settings", return_value={}):
             with patch.dict(os.environ, env, clear=True):
                 result = devcode.resolve_template_search_path()
-        self.assertEqual(result, ["/xdg/data/dev-code/templates"])
+        self.assertEqual(result, [os.path.join("/xdg/data", "dev-code", "templates")])
 
     def test_skips_empty_entries(self):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "", "/b"]}):
