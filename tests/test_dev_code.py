@@ -1,4 +1,3 @@
-import argparse
 import importlib.util
 import io
 import json
@@ -9,6 +8,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
+
+from click.testing import CliRunner
 
 # Load src/devcode.py as a module
 spec = importlib.util.spec_from_file_location(
@@ -150,52 +151,200 @@ class TestWaitForContainer(unittest.TestCase):
         self.assertIn(r"C:\myproject", label_filter)
 
 
-class TestResolveTemplateSearchPath(unittest.TestCase):
-    def _clean_env(self, extra=None):
-        """Return env with DEVCODE_TEMPLATE_PATH/XDG_DATA_HOME stripped."""
+class TestFindContainerConfigForProject(unittest.TestCase):
+    def _mock_result(self, output, returncode=0):
+        return MagicMock(returncode=returncode, stdout=output)
+
+    def test_returns_config_from_running_container(self):
+        output = "2024-01-15 10:00:00 +0000 UTC\t/path/to/devcontainer.json\n"
+        with patch("subprocess.run", return_value=self._mock_result(output)):
+            result = devcode._find_container_config_for_project("/myproject")
+        self.assertEqual(result, "/path/to/devcontainer.json")
+
+    def test_returns_most_recent_when_multiple_running(self):
+        output = (
+            "2024-01-14 10:00:00 +0000 UTC\t/path/old.json\n"
+            "2024-01-15 10:00:00 +0000 UTC\t/path/new.json\n"
+        )
+        with patch("subprocess.run", return_value=self._mock_result(output)):
+            result = devcode._find_container_config_for_project("/myproject")
+        self.assertEqual(result, "/path/new.json")
+
+    def test_falls_back_to_stopped_when_no_running(self):
+        running_result = self._mock_result("")
+        stopped_result = self._mock_result(
+            "2024-01-15 10:00:00 +0000 UTC\t/stopped.json\n"
+        )
+        with patch("subprocess.run", side_effect=[running_result, stopped_result]):
+            result = devcode._find_container_config_for_project("/myproject")
+        self.assertEqual(result, "/stopped.json")
+
+    def test_returns_none_when_no_containers(self):
+        with patch("subprocess.run", return_value=self._mock_result("")):
+            result = devcode._find_container_config_for_project("/myproject")
+        self.assertIsNone(result)
+
+    def test_returns_none_on_docker_failure(self):
+        with patch("subprocess.run", return_value=self._mock_result("", returncode=1)):
+            result = devcode._find_container_config_for_project("/myproject")
+        self.assertIsNone(result)
+
+    def test_wsl_converts_path(self):
+        calls = []
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return self._mock_result("")
+        with patch("subprocess.run", side_effect=fake_run):
+            with patch.object(devcode, "is_wsl", return_value=True):
+                with patch.object(devcode, "wsl_to_windows", return_value=r"C:\myproject"):
+                    devcode._find_container_config_for_project("/myproject")
+        label_filter = next(a for a in calls[0] if "devcontainer.local_folder" in a)
+        self.assertIn(r"C:\myproject", label_filter)
+
+    def test_returns_none_when_docker_not_installed(self):
+        with patch("subprocess.run", side_effect=OSError("docker not found")):
+            result = devcode._find_container_config_for_project("/myproject")
+        self.assertIsNone(result)
+
+
+class TestCmdOpen(unittest.TestCase):
+    def test_errors_on_nonexistent_projectpath(self):
+        with self.assertRaises(SystemExit):
+            devcode._do_open("/nonexistent/path/xyz123", "mytemplate", None, 300, False)
+
+    def test_errors_on_root_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # patch abspath to return "/" so the root guard triggers
+            with patch("os.path.abspath", return_value="/"):
+                with patch("os.path.exists", return_value=True):
+                    with self.assertRaises(SystemExit):
+                        devcode._do_open(tmp, "mytemplate", None, 300, False)
+
+    def test_uses_explicit_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(devcode, "resolve_template", return_value="/fake/devcontainer.json") as mock_rt:
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("shutil.which", return_value="/usr/bin/code"):
+                        with patch("subprocess.Popen"):
+                            with patch.object(devcode, "run_post_launch"):
+                                devcode._do_open(tmp, "mytemplate", None, 300, False)
+            mock_rt.assert_called_once_with("mytemplate")
+
+    def test_auto_detects_from_container(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(devcode, "_find_container_config_for_project",
+                               return_value="/found/devcontainer.json") as mock_find:
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("shutil.which", return_value="/usr/bin/code"):
+                        with patch("subprocess.Popen"):
+                            with patch.object(devcode, "run_post_launch"):
+                                devcode._do_open(tmp, None, None, 300, False)
+            mock_find.assert_called_once()
+
+    def test_auto_detects_falls_back_to_default_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(devcode, "_find_container_config_for_project", return_value=None):
+                with patch.object(devcode, "_load_settings",
+                                   return_value={"default_template": "dev-code"}):
+                    with patch.object(devcode, "resolve_template",
+                                       return_value="/fake/devcontainer.json") as mock_rt:
+                        with patch.object(devcode, "_git_repo_root", return_value=None):
+                            with patch("shutil.which", return_value="/usr/bin/code"):
+                                with patch("subprocess.Popen"):
+                                    with patch.object(devcode, "run_post_launch"):
+                                        devcode._do_open(tmp, None, None, 300, False)
+                mock_rt.assert_called_once_with("dev-code")
+
+    def test_errors_when_no_container_and_no_default_template(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(devcode, "_find_container_config_for_project", return_value=None):
+                with patch.object(devcode, "_load_settings", return_value={"default_template": ""}):
+                    with patch.object(devcode, "_git_repo_root", return_value=None):
+                        with self.assertRaises(SystemExit):
+                            devcode._do_open(tmp, None, None, 300, False)
+
+
+class TestConfDir(unittest.TestCase):
+    def test_uses_devcode_conf_dir_override(self):
+        with patch.dict(os.environ, {"DEVCODE_CONF_DIR": "/custom/conf"}):
+            self.assertEqual(devcode._conf_dir(), "/custom/conf")
+
+    def test_falls_back_to_xdg_config_home(self):
         env = {k: v for k, v in os.environ.items()
-               if k not in ("DEVCODE_TEMPLATE_PATH", "XDG_DATA_HOME")}
-        if extra:
-            env.update(extra)
-        return env
-
-    def test_single_path(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": "/a/b"})
+               if k not in ("DEVCODE_CONF_DIR", "XDG_CONFIG_HOME")}
+        env["XDG_CONFIG_HOME"] = "/xdg/config"
         with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(devcode.resolve_template_search_path(), ["/a/b"])
+            self.assertEqual(devcode._conf_dir(), os.path.join("/xdg/config", "dev-code"))
 
-    def test_multiple_paths(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": os.pathsep.join(["/a", "/b", "/c"])})
+    def test_falls_back_to_default_config_dir(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("DEVCODE_CONF_DIR", "XDG_CONFIG_HOME")}
         with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b", "/c"])
+            result = devcode._conf_dir()
+        self.assertTrue(result.endswith(os.path.join(".config", "dev-code")))
 
-    def test_empty_entries_skipped(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": f"/a{os.pathsep}{os.pathsep}/b{os.pathsep}"})
-        with patch.dict(os.environ, env, clear=True):
+
+class TestLoadSettings(unittest.TestCase):
+    def test_creates_default_settings_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"DEVCODE_CONF_DIR": tmp}):
+                settings = devcode._load_settings()
+        self.assertEqual(settings["default_template"], "dev-code")
+        self.assertIn("template_sources", settings)
+
+    def test_creates_settings_file_on_disk_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            conf_dir = os.path.join(tmp, "conf")
+            with patch.dict(os.environ, {"DEVCODE_CONF_DIR": conf_dir}):
+                devcode._load_settings()
+            self.assertTrue(os.path.exists(os.path.join(conf_dir, "settings.json")))
+
+    def test_reads_existing_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = os.path.join(tmp, "settings.json")
+            with open(settings_path, "w") as f:
+                json.dump({"template_sources": ["/custom"], "default_template": "mytemplate"}, f)
+            with patch.dict(os.environ, {"DEVCODE_CONF_DIR": tmp}):
+                settings = devcode._load_settings()
+        self.assertEqual(settings["default_template"], "mytemplate")
+        self.assertEqual(settings["template_sources"], ["/custom"])
+
+    def test_invalid_json_returns_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = os.path.join(tmp, "settings.json")
+            with open(settings_path, "w") as f:
+                f.write("not valid json {{{")
+            with patch.dict(os.environ, {"DEVCODE_CONF_DIR": tmp}):
+                with self.assertLogs("devcode", level="WARNING"):
+                    settings = devcode._load_settings()
+        self.assertEqual(settings["default_template"], "dev-code")
+
+
+class TestResolveTemplateSearchPath(unittest.TestCase):
+    def test_uses_template_sources_from_settings(self):
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "/b"]}):
             self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b"])
 
-    def test_all_empty_entries_falls_back_to_xdg(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": os.pathsep * 3, "XDG_DATA_HOME": "/xdg"})
-        with patch.dict(os.environ, env, clear=True):
+    def test_expands_tilde_in_sources(self):
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["~/templates"]}):
             result = devcode.resolve_template_search_path()
-        self.assertEqual(result, [os.path.join("/xdg", "dev-code", "templates")])
+        self.assertTrue(os.path.isabs(result[0]))
+        self.assertNotIn("~", result[0])
 
-    def test_unset_uses_xdg_data_home(self):
-        env = self._clean_env({"XDG_DATA_HOME": "/xdg"})
-        with patch.dict(os.environ, env, clear=True):
-            result = devcode.resolve_template_search_path()
-        self.assertEqual(result, [os.path.join("/xdg", "dev-code", "templates")])
+    def test_falls_back_to_xdg_data_home_when_no_sources(self):
+        env = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
+        env["XDG_DATA_HOME"] = "/xdg/data"
+        with patch.object(devcode, "_load_settings", return_value={}):
+            with patch.dict(os.environ, env, clear=True):
+                result = devcode.resolve_template_search_path()
+        self.assertEqual(result, [os.path.join("/xdg/data", "dev-code", "templates")])
 
-    def test_unset_uses_default_xdg(self):
-        env = self._clean_env()
-        with patch.dict(os.environ, env, clear=True):
-            result = devcode.resolve_template_search_path()
-        self.assertIn(os.path.join(".local", "share", "dev-code", "templates"), result[0])
-
+    def test_skips_empty_entries(self):
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "", "/b"]}):
+            self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b"])
 
     def test_write_template_dir_returns_first_entry(self):
-        env = self._clean_env({"DEVCODE_TEMPLATE_PATH": os.pathsep.join(["/first", "/second"])})
-        with patch.dict(os.environ, env, clear=True):
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/first", "/second"]}):
             self.assertEqual(devcode._write_template_dir(), "/first")
 
 
@@ -289,13 +438,13 @@ class TestResolveTemplate(unittest.TestCase):
             os.makedirs(tpath)
             cfg = os.path.join(tpath, "devcontainer.json")
             open(cfg, "w").close()
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 result = devcode.resolve_template("mytemplate")
         self.assertEqual(result, cfg)
 
     def test_exits_when_not_found(self):
         with tempfile.TemporaryDirectory() as d:
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     with self.assertRaises(SystemExit):
                         devcode.resolve_template("no-such-template")
@@ -304,7 +453,7 @@ class TestResolveTemplate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = os.path.join(d, "devcontainer.json")
             open(cfg, "w").close()
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d + "_templates"}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d + "_templates"]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     result = devcode.resolve_template(cfg)
         self.assertEqual(result, cfg)
@@ -315,7 +464,7 @@ class TestResolveTemplate(unittest.TestCase):
             os.makedirs(sub)
             cfg = os.path.join(sub, "devcontainer.json")
             open(cfg, "w").close()
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d + "_templates"}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d + "_templates"]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     result = devcode.resolve_template(d)
         self.assertEqual(result, cfg)
@@ -333,7 +482,7 @@ class TestResolveTemplate(unittest.TestCase):
             old_cwd = os.getcwd()
             os.chdir(d)
             try:
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.path.join(d, "templates")}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [os.path.join(d, "templates")]}):
                     with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                         result = devcode.resolve_template("./mydev")
             finally:
@@ -350,7 +499,7 @@ class TestResolveTemplate(unittest.TestCase):
             os.makedirs(local)
             local_cfg = os.path.join(local, "devcontainer.json")
             open(local_cfg, "w").close()
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.path.join(d, "templates")}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [os.path.join(d, "templates")]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     result = devcode.resolve_template(os.path.join(d, "mydev"))
         self.assertEqual(result, local_cfg)
@@ -368,7 +517,7 @@ class TestResolveTemplate(unittest.TestCase):
             old_cwd = os.getcwd()
             os.chdir(os.path.dirname(d))
             try:
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d + "_templates"}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [d + "_templates"]}):
                     with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                         with self.assertLogs("devcode", level="WARNING") as cm:
                             result = devcode.resolve_template(dirname)
@@ -382,7 +531,7 @@ class TestResolveTemplate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = os.path.join(d, "custom.json")
             open(cfg, "w").close()
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d + "_t"}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d + "_t"]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     with self.assertRaises(SystemExit):
                         devcode.resolve_template(cfg)
@@ -391,7 +540,7 @@ class TestResolveTemplate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             empty_dir = os.path.join(d, "myproject")
             os.makedirs(empty_dir)
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d + "_t"}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d + "_t"]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     with self.assertRaises(SystemExit):
                         devcode.resolve_template(empty_dir)
@@ -399,7 +548,7 @@ class TestResolveTemplate(unittest.TestCase):
     def test_exits_when_path_prefix_but_path_not_found(self):
         with tempfile.TemporaryDirectory() as d:
             nonexistent = os.path.join(d, "nonexistent")
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d + "_t"}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d + "_t"]}):
                 with patch.object(devcode, "__file__", os.path.join(d, "devcode.py")):
                     with self.assertLogs("devcode", level="ERROR") as cm:
                         with self.assertRaises(SystemExit):
@@ -412,8 +561,7 @@ class TestResolveTemplate(unittest.TestCase):
             os.makedirs(tpath)
             cfg = os.path.join(tpath, "devcontainer.json")
             open(cfg, "w").close()
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d},
-                            clear=False):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 result = devcode.resolve_template("mytemplate")
         self.assertEqual(result, cfg)
 
@@ -424,7 +572,7 @@ class TestResolveTemplate(unittest.TestCase):
                 builtin = os.path.join(pkg_dir, "dev_code_templates", "dev-code", ".devcontainer")
                 os.makedirs(builtin)
                 open(os.path.join(builtin, "devcontainer.json"), "w").close()
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                         with self.assertRaises(SystemExit):
                             devcode.resolve_template("dev-code")
@@ -436,7 +584,7 @@ class TestResolveTemplate(unittest.TestCase):
                 os.makedirs(tpath)
                 cfg = os.path.join(tpath, "devcontainer.json")
                 open(cfg, "w").close()
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [d1, d2]}):
                     result = devcode.resolve_template("mytemplate")
         self.assertEqual(result, cfg)
 
@@ -532,24 +680,30 @@ class TestMain(unittest.TestCase):
         tpl = os.path.join(self.tmpdir, "claude", ".devcontainer")
         os.makedirs(tpl)
         open(os.path.join(tpl, "devcontainer.json"), "w").close()
-        self.env_patch = patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": self.tmpdir})
-        self.env_patch.start()
+        self.patch_settings = patch.object(devcode, "_load_settings", return_value={"template_sources": [self.tmpdir]})
+        self.patch_settings.start()
+        # Snapshot logger handlers so we can restore after CliRunner calls install one
+        self._logger_handlers = list(devcode.logger.handlers)
 
     def tearDown(self):
-        self.env_patch.stop()
+        self.patch_settings.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+        # Remove any logger handlers added during the test (CliRunner installs a StreamHandler
+        # pointing at its fake stderr; that stream becomes invalid after CliRunner exits)
+        devcode.logger.handlers[:] = self._logger_handlers
 
     def test_projectpath_root_exits(self):
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/"]):
-            with self.assertRaises(SystemExit):
-                devcode.main()
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["open", "/", "claude"])
+        self.assertNotEqual(result.exit_code, 0)
 
     def test_code_not_on_path_exits(self):
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value=None):
                 with patch("shutil.which", return_value=None):
-                    with self.assertRaises(SystemExit):
-                        devcode.main()
+                    result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
+        self.assertNotEqual(result.exit_code, 0)
 
     def test_launches_vscode_with_folder_uri(self):
         launched = []
@@ -557,13 +711,15 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
                     with patch("subprocess.Popen", side_effect=fake_popen):
                         with patch.object(devcode, "run_post_launch"):
-                            devcode.main()
+                            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
 
+        self.assertEqual(result.exit_code, 0)
         self.assertEqual(len(launched), 1)
         self.assertEqual(launched[0][0], "code")
         self.assertEqual(launched[0][1], "--folder-uri")
@@ -575,13 +731,15 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
                     with patch("subprocess.Popen", side_effect=fake_popen):
                         with patch.object(devcode, "run_post_launch"):
-                            devcode.main()
+                            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
 
+        self.assertEqual(result.exit_code, 0)
         self.assertIn("/workspaces/myproject", launched[0][2])
 
     def test_custom_container_folder(self):
@@ -590,13 +748,18 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject", "--container-folder", "/workspace/custom"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
                     with patch("subprocess.Popen", side_effect=fake_popen):
                         with patch.object(devcode, "run_post_launch"):
-                            devcode.main()
+                            result = runner.invoke(
+                                devcode.cli,
+                                ["open", "/myproject", "claude", "--container-folder", "/workspace/custom"]
+                            )
 
+        self.assertEqual(result.exit_code, 0)
         self.assertIn("/workspace/custom", launched[0][2])
 
     def test_timeout_passed_to_run_post_launch(self):
@@ -604,13 +767,18 @@ class TestMain(unittest.TestCase):
         def fake_rpl(config_file, project_path, timeout):
             captured["timeout"] = timeout
 
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject", "--timeout", "42"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
                     with patch("subprocess.Popen", return_value=MagicMock()):
                         with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
-                            devcode.main()
+                            result = runner.invoke(
+                                devcode.cli,
+                                ["open", "/myproject", "claude", "--timeout", "42"]
+                            )
 
+        self.assertEqual(result.exit_code, 0)
         self.assertEqual(captured["timeout"], 42)
 
     def test_default_timeout_is_300(self):
@@ -618,13 +786,15 @@ class TestMain(unittest.TestCase):
         def fake_rpl(config_file, project_path, timeout):
             captured["timeout"] = timeout
 
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch("shutil.which", return_value="/usr/bin/code"):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
                     with patch("subprocess.Popen", return_value=MagicMock()):
                         with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
-                            devcode.main()
+                            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
 
+        self.assertEqual(result.exit_code, 0)
         self.assertEqual(captured["timeout"], 300)
 
 
@@ -634,37 +804,47 @@ class TestGitSubdirGuard(unittest.TestCase):
         tpl = os.path.join(self.tmpdir, "claude", ".devcontainer")
         os.makedirs(tpl)
         open(os.path.join(tpl, "devcontainer.json"), "w").close()
-        self.env_patch = patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": self.tmpdir})
-        self.env_patch.start()
+        self.patch_settings = patch.object(devcode, "_load_settings", return_value={"template_sources": [self.tmpdir]})
+        self.patch_settings.start()
+        # Snapshot logger handlers so we can restore after CliRunner calls install one
+        self._logger_handlers = list(devcode.logger.handlers)
 
     def tearDown(self):
-        self.env_patch.stop()
+        self.patch_settings.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
+        # Remove any logger handlers added during the test (CliRunner installs a StreamHandler
+        # pointing at its fake stderr; that stream becomes invalid after CliRunner exits)
+        devcode.logger.handlers[:] = self._logger_handlers
 
     def test_subdir_of_git_repo_exits(self):
         """Guard fires when git root differs from project_path."""
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/repo/subproject"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value="/repo"):
-                with self.assertRaises(SystemExit):
-                    devcode.main()
+                result = runner.invoke(devcode.cli, ["open", "/repo/subproject", "claude"])
+        self.assertNotEqual(result.exit_code, 0)
 
     def test_project_is_git_root_does_not_exit(self):
         """Guard does not fire when project_path IS the git root."""
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/repo"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value="/repo"):
                 with patch("shutil.which", return_value="/usr/bin/code"):
                     with patch("subprocess.Popen", return_value=MagicMock()):
                         with patch.object(devcode, "run_post_launch"):
-                            devcode.main()  # must not raise
+                            result = runner.invoke(devcode.cli, ["open", "/repo", "claude"])
+        self.assertEqual(result.exit_code, 0)
 
     def test_not_in_git_repo_does_not_exit(self):
         """Guard does not fire when _git_repo_root returns None."""
-        with patch.object(sys, "argv", ["devcode", "open", "claude", "/myproject"]):
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value=None):
                 with patch("shutil.which", return_value="/usr/bin/code"):
                     with patch("subprocess.Popen", return_value=MagicMock()):
                         with patch.object(devcode, "run_post_launch"):
-                            devcode.main()  # must not raise
+                            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
+        self.assertEqual(result.exit_code, 0)
 
     def test_git_not_available_does_not_exit(self):
         """_git_repo_root returns None when git is unavailable (OSError)."""
@@ -1115,10 +1295,10 @@ class TestCmdList(unittest.TestCase):
 
     def _run_list(self, search_path, long=False):
         lines = []
-        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": search_path}):
-            args = MagicMock(subcommand="list", verbose=False, long=long)
+        dirs = [d for d in search_path.split(os.pathsep) if d]
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": dirs}):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_list(args)
+                devcode.list_command.callback(long=long)
         return lines
 
     def test_short_lists_user_templates(self):
@@ -1257,12 +1437,9 @@ class TestCmdNew(unittest.TestCase):
         with tempfile.TemporaryDirectory() as pkg_dir:
             self._setup_pkg(pkg_dir)
             with tempfile.TemporaryDirectory() as user_dir:
-                args = MagicMock(subcommand="new", verbose=False,
-                                 base=None, edit=False)
-                args.name = "myapp"
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        devcode.cmd_new(args)
+                        devcode.new_command.callback(name="myapp", base=None, edit=False)
                 self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_creates_template_from_explicit_base(self):
@@ -1272,60 +1449,45 @@ class TestCmdNew(unittest.TestCase):
             os.makedirs(base_path)
             open(os.path.join(base_path, "devcontainer.json"), "w").close()
 
-            args = MagicMock(subcommand="new", verbose=False,
-                             base="mybase", edit=False)
-            args.name = "myapp"
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
-                devcode.cmd_new(args)
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+                devcode.new_command.callback(name="myapp", base="mybase", edit=False)
             self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_exits_if_name_already_exists(self):
         with tempfile.TemporaryDirectory() as user_dir:
             existing = os.path.join(user_dir, "myapp")
             os.makedirs(existing)
-            args = MagicMock(subcommand="new", verbose=False,
-                             base=None, edit=False)
-            args.name = "myapp"
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                 with self.assertRaises(SystemExit):
-                    devcode.cmd_new(args)
+                    devcode.new_command.callback(name="myapp", base=None, edit=False)
 
     def test_exits_if_base_not_found(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
             with tempfile.TemporaryDirectory() as user_dir:
-                args = MagicMock(subcommand="new", verbose=False,
-                                 base="no-such-base", edit=False)
-                args.name = "myapp"
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                         with self.assertRaises(SystemExit):
-                            devcode.cmd_new(args)
+                            devcode.new_command.callback(name="myapp", base="no-such-base", edit=False)
 
-    def test_edit_flag_calls_cmd_open(self):
+    def test_edit_flag_calls_do_open(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
             self._setup_pkg(pkg_dir)
             with tempfile.TemporaryDirectory() as user_dir:
-                args = MagicMock(subcommand="new", verbose=False,
-                                 base=None, edit=True)
-                args.name = "myapp"
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        with patch.object(devcode, "cmd_open") as mock_open:
-                            devcode.cmd_new(args)
+                        with patch.object(devcode, "_do_open") as mock_open:
+                            devcode.new_command.callback(name="myapp", base=None, edit=True)
                 mock_open.assert_called_once()
-                call_args = mock_open.call_args[0][0]
-                self.assertEqual(call_args.template, "myapp")
-                self.assertEqual(call_args.projectpath, os.path.join(user_dir, "myapp"))
+                self.assertEqual(mock_open.call_args.kwargs["template"], "myapp")
+                self.assertEqual(mock_open.call_args.kwargs["projectpath"], os.path.join(user_dir, "myapp"))
 
     def test_creates_template_from_default_base(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
             self._setup_pkg(pkg_dir)
             with tempfile.TemporaryDirectory() as user_dir:
-                args = MagicMock(subcommand="new", verbose=False, base=None, edit=False)
-                args.name = "myapp"
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        devcode.cmd_new(args)
+                        devcode.new_command.callback(name="myapp", base=None, edit=False)
                 self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_base_found_in_second_search_dir(self):
@@ -1334,10 +1496,8 @@ class TestCmdNew(unittest.TestCase):
                 base = os.path.join(d2, "mybase", ".devcontainer")
                 os.makedirs(base)
                 open(os.path.join(base, "devcontainer.json"), "w").close()
-                args = MagicMock(subcommand="new", verbose=False, base="mybase", edit=False)
-                args.name = "myapp"
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
-                    devcode.cmd_new(args)
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [d1, d2]}):
+                    devcode.new_command.callback(name="myapp", base="mybase", edit=False)
                 # writes to first dir
                 self.assertTrue(os.path.isdir(os.path.join(d1, "myapp")))
 
@@ -1353,44 +1513,39 @@ class TestCmdEdit(unittest.TestCase):
     def test_named_template_opens_root_in_code(self):
         with tempfile.TemporaryDirectory() as d:
             root = self._make_template(d, "mytemplate")
-            args = MagicMock(subcommand="edit", verbose=False, template="mytemplate")
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 with patch("subprocess.run") as mock_run:
-                    devcode.cmd_edit(args)
+                    devcode.edit_command.callback(template="mytemplate")
             mock_run.assert_called_once_with(["code", root])
 
     def test_named_template_found_in_second_dir(self):
         with tempfile.TemporaryDirectory() as d1:
             with tempfile.TemporaryDirectory() as d2:
                 root = self._make_template(d2, "mytemplate")
-                args = MagicMock(subcommand="edit", verbose=False, template="mytemplate")
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": os.pathsep.join([d1, d2])}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [d1, d2]}):
                     with patch("subprocess.run") as mock_run:
-                        devcode.cmd_edit(args)
+                        devcode.edit_command.callback(template="mytemplate")
                 mock_run.assert_called_once_with(["code", root])
 
     def test_named_template_not_found_exits(self):
         with tempfile.TemporaryDirectory() as d:
-            args = MagicMock(subcommand="edit", verbose=False, template="no-such")
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 with self.assertRaises(SystemExit):
-                    devcode.cmd_edit(args)
+                    devcode.edit_command.callback(template="no-such")
 
-    def test_no_arg_is_argparse_error(self):
-        """edit requires a template argument; omitting it should exit with code 2."""
-        with self.assertRaises(SystemExit) as ctx:
-            with patch("sys.argv", ["devcode", "edit"]):
-                devcode.main()
-        self.assertEqual(ctx.exception.code, 2)
+    def test_no_arg_is_missing_argument_error(self):
+        """edit requires a template argument; omitting it should exit non-zero."""
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["edit"])
+        self.assertNotEqual(result.exit_code, 0)
 
-    def test_does_not_call_cmd_open(self):
+    def test_does_not_call_do_open(self):
         with tempfile.TemporaryDirectory() as d:
             self._make_template(d, "mytemplate")
-            args = MagicMock(subcommand="edit", verbose=False, template="mytemplate")
-            with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": d}):
-                with patch.object(devcode, "cmd_open") as mock_open:
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
+                with patch.object(devcode, "_do_open") as mock_open:
                     with patch("subprocess.run"):
-                        devcode.cmd_edit(args)
+                        devcode.edit_command.callback(template="mytemplate")
             mock_open.assert_not_called()
 
 
@@ -1418,9 +1573,8 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=False, interactive=False)
         combined = "\n".join(lines)
         self.assertIn("claude", combined)
         self.assertIn("abc123def456", combined)
@@ -1431,17 +1585,15 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout="")
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=False, interactive=False)
         self.assertTrue(any("no running devcontainers" in str(l) for l in lines))
 
     def test_docker_unavailable_exits(self):
         mock_result = MagicMock(returncode=1, stdout="")
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with self.assertRaises(SystemExit):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=False, interactive=False)
 
     def test_malformed_row_skipped(self):
         # A row with fewer than 4 fields after dropping CreatedAt should be skipped silently
@@ -1451,9 +1603,8 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout=stdout)
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)  # must not raise
+                devcode.ps_command.callback(show_all=False, interactive=False)  # must not raise
         combined = "\n".join(lines)
         self.assertIn("bbb222", combined)  # good row shown
         self.assertNotIn("abc123", combined)  # malformed row skipped
@@ -1470,9 +1621,8 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=True, interactive=False)
         combined = "\n".join(lines)
         self.assertIn("aaa111", combined)   # stopped container included
         self.assertIn("bbb222", combined)   # running container included
@@ -1489,9 +1639,8 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=False, interactive=False)
         combined = "\n".join(lines)
         self.assertNotIn("aaa111", combined)   # stopped excluded
         self.assertIn("bbb222", combined)      # running shown
@@ -1500,12 +1649,11 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout="")
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=True, interactive=False)
         self.assertTrue(any("no devcontainers" in str(l) and "running" not in str(l) for l in lines))
 
-    def test_interactive_valid_selection_calls_cmd_open(self):
+    def test_interactive_valid_selection_opens_container(self):
         rows = [
             ("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
              "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
@@ -1518,16 +1666,15 @@ class TestCmdPs(unittest.TestCase):
         )
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
-                with patch("devcode.cmd_open") as mock_open:
-                    args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
-                    devcode.cmd_ps(args)
-        mock_open.assert_called_once()
-        call_args = mock_open.call_args[0][0]
-        self.assertEqual(call_args.template, "/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json")
-        self.assertEqual(call_args.projectpath, "/home/user/myapp")
-        self.assertEqual(call_args.container_folder, "/workspaces/myapp")
-        self.assertEqual(call_args.timeout, 300)
-        self.assertFalse(call_args.dry_run)
+                with patch("devcode._do_open") as mock_open:
+                    devcode.ps_command.callback(show_all=False, interactive=True)
+        mock_open.assert_called_once_with(
+            projectpath="/home/user/myapp",
+            template="/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
+            container_folder="/workspaces/myapp",
+            timeout=300,
+            dry_run=False,
+        )
 
     def test_interactive_mount_fallback(self):
         rows = [
@@ -1543,11 +1690,9 @@ class TestCmdPs(unittest.TestCase):
         )
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
-                with patch("devcode.cmd_open") as mock_open:
-                    args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
-                    devcode.cmd_ps(args)
-        call_args = mock_open.call_args[0][0]
-        self.assertEqual(call_args.container_folder, "/workspaces/myapp")  # fallback
+                with patch("devcode._do_open") as mock_open:
+                    devcode.ps_command.callback(show_all=False, interactive=True)
+        self.assertEqual(mock_open.call_args.kwargs["container_folder"], "/workspaces/myapp")
 
     def test_interactive_invalid_selection_exits(self):
         rows = [
@@ -1558,9 +1703,8 @@ class TestCmdPs(unittest.TestCase):
         ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", return_value="99"):
-                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
                 with self.assertRaises(SystemExit):
-                    devcode.cmd_ps(args)
+                    devcode.ps_command.callback(show_all=False, interactive=True)
 
     def test_interactive_non_integer_exits(self):
         rows = [
@@ -1571,9 +1715,8 @@ class TestCmdPs(unittest.TestCase):
         ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", return_value="abc"):
-                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
                 with self.assertRaises(SystemExit):
-                    devcode.cmd_ps(args)
+                    devcode.ps_command.callback(show_all=False, interactive=True)
 
     def test_interactive_missing_config_label_exits(self):
         rows = [
@@ -1584,17 +1727,15 @@ class TestCmdPs(unittest.TestCase):
         ls_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", return_value="1"):
-                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
                 with self.assertRaises(SystemExit):
-                    devcode.cmd_ps(args)
+                    devcode.ps_command.callback(show_all=False, interactive=True)
 
     def test_interactive_empty_table_no_prompt(self):
         ls_result = MagicMock(returncode=0, stdout="")
         prompted = []
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", side_effect=lambda _: prompted.append(True) or "1"):
-                args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=True)
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=False, interactive=True)
         self.assertEqual(prompted, [])   # input() was never called
 
     def test_interactive_all_with_malformed_row_correct_selection(self):
@@ -1606,12 +1747,10 @@ class TestCmdPs(unittest.TestCase):
         inspect_result = MagicMock(returncode=0, stdout='[]')
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
-                with patch("devcode.cmd_open") as mock_open:
-                    args = MagicMock(subcommand="ps", verbose=False, all=True, interactive=True)
-                    devcode.cmd_ps(args)
+                with patch("devcode._do_open") as mock_open:
+                    devcode.ps_command.callback(show_all=True, interactive=True)
         mock_open.assert_called_once()
-        call_args = mock_open.call_args[0][0]
-        self.assertEqual(call_args.projectpath, "/home/user/myapp")  # good row, not malformed
+        self.assertEqual(mock_open.call_args.kwargs["projectpath"], "/home/user/myapp")
 
     def test_sort_ascending_by_created_at(self):
         # Docker returns rows newest-first; cmd_ps must reorder oldest-first
@@ -1626,9 +1765,8 @@ class TestCmdPs(unittest.TestCase):
         mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
         lines = []
         with patch("subprocess.run", return_value=mock_result):
-            args = MagicMock(subcommand="ps", verbose=False, all=False, interactive=False)
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_ps(args)
+                devcode.ps_command.callback(show_all=False, interactive=False)
         # Find data rows (skip header)
         data_rows = [l for l in lines if "older222" in l or "newer111" in l]
         self.assertEqual(len(data_rows), 2)
@@ -1638,6 +1776,18 @@ class TestCmdPs(unittest.TestCase):
         self.assertLess(idx_older, idx_newer)
         # older222 must be row #1
         self.assertIn("1", lines[idx_older])
+
+
+class TestDoOpen(unittest.TestCase):
+    def test_errors_on_nonexistent_projectpath(self):
+        with self.assertRaises(SystemExit):
+            devcode._do_open(
+                projectpath="/nonexistent/path/xyz123",
+                template="mytemplate",
+                container_folder=None,
+                timeout=300,
+                dry_run=False,
+            )
 
 
 class TestCmdOpenDryRun(unittest.TestCase):
@@ -1653,17 +1803,11 @@ class TestCmdOpenDryRun(unittest.TestCase):
 
     def _run_dry_run(self, user_dir, template, projectpath, container_folder=None):
         lines = []
-        args = argparse.Namespace(
-            template=template,
-            projectpath=projectpath,
-            container_folder=container_folder,
-            timeout=300,
-            dry_run=True,
-            verbose=False,
-        )
-        with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
-            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.cmd_open(args)
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+            with patch("os.path.exists", return_value=True):
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                        devcode._do_open(projectpath, template, container_folder, 300, True)
         return lines
 
     def test_prints_config_and_uri(self):
@@ -1716,29 +1860,23 @@ class TestCmdOpenDryRun(unittest.TestCase):
                 {"source": "${localEnv:NONEXISTENT_VAR_XYZ}", "target": "/home/vscode/x"}
             ])
             with patch.dict(os.environ, env_clean, clear=True):
-                with patch.dict(os.environ, {"DEVCODE_TEMPLATE_PATH": user_dir}):
-                    lines = []
-                    args = argparse.Namespace(template="mytemplate", projectpath="/myproject",
-                                              container_folder=None, timeout=300, dry_run=True,
-                                              verbose=False)
-                    with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                        devcode.cmd_open(args)
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+                    with patch("os.path.exists", return_value=True):
+                        with patch.object(devcode, "_git_repo_root", return_value=None):
+                            lines = []
+                            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                                devcode._do_open("/myproject", "mytemplate", None, 300, True)
         combined = "\n".join(lines)
         self.assertIn("<unset:", combined)
 
 
 class TestBanner(unittest.TestCase):
     def test_help_contains_tagline(self):
-        """Banner tagline appears in --help output.
-        Uses subprocess to avoid argparse SystemExit contaminating the test runner.
-        """
-        result = subprocess.run(
-            ["uv", "run", "python", "src/devcode.py", "--help"],
-            capture_output=True, text=True, encoding="utf-8",
-            cwd=os.path.join(os.path.dirname(__file__), ".."),
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("project · editor · container — simplified", result.stdout)
+        """Banner tagline appears in --help output."""
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("project · editor · container", result.output)
 
 
 class TestListTemplateNames(unittest.TestCase):
@@ -1798,188 +1936,71 @@ class TestListTemplateNames(unittest.TestCase):
                         names = devcode._list_template_names()
         self.assertEqual(names, [])
 
-class TestCmdComplete(unittest.TestCase):
-    def _run(self, cword_index, words, template_names=None):
-        """Run cmd_completion --complete path, capture printed lines, assert exit code 0."""
-        if template_names is None:
-            template_names = []
-        # --complete receives [cword_index_str, *words] as complete_words
-        args = argparse.Namespace(complete_words=[str(cword_index)] + words, shell=None)
-        captured = []
-        with patch.object(devcode, "_list_template_names", return_value=template_names):
-            with patch("builtins.print", side_effect=lambda x: captured.append(x)):
-                with self.assertRaises(SystemExit) as cm:
-                    devcode.cmd_completion(args)
-        self.assertEqual(cm.exception.code, 0)
-        return captured
+class TestClickCLI(unittest.TestCase):
+    def test_no_args_shows_banner(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, [])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("project · editor · container", result.output)
 
-    def test_completing_subcommand_returns_all_subcommands(self):
-        result = self._run(1, ["devcode", ""])
-        for sub in ("open", "new", "edit", "list", "ps", "completion"):
-            self.assertIn(sub, result)
-        self.assertNotIn("init", result)
+    def test_version_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["--version"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("devcode", result.output)
 
-    def test_prefix_filters_subcommands(self):
-        result = self._run(1, ["devcode", "op"])
-        self.assertEqual(result, ["open"])
+    def test_open_dry_run(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            os.makedirs("mytemplate/.devcontainer")
+            with open("mytemplate/.devcontainer/devcontainer.json", "w") as f:
+                f.write('{"name": "test"}')
+            project = os.path.abspath(".")
+            with patch.object(devcode, "_load_settings",
+                               return_value={"template_sources": [os.path.abspath(".")]}):
+                with patch.object(devcode, "_git_repo_root", return_value=None):
+                    result = runner.invoke(
+                        devcode.cli, ["open", project, "mytemplate", "--dry-run"]
+                    )
+        self.assertEqual(result.exit_code, 0)
 
-    def test_open_index2_returns_template_names(self):
-        result = self._run(2, ["devcode", "open", ""], template_names=["alpha", "beta"])
-        self.assertIn("alpha", result)
-        self.assertIn("beta", result)
+    def test_list_command(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_list_template_names", return_value=["tmpl-a", "tmpl-b"]):
+            result = runner.invoke(devcode.cli, ["list"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("tmpl-a", result.output)
+        self.assertIn("tmpl-b", result.output)
 
-    def test_open_index2_prefix_filters_templates(self):
-        result = self._run(2, ["devcode", "open", "al"], template_names=["alpha", "beta"])
-        self.assertEqual(result, ["alpha"])
+    def test_new_command_unknown_base_exits(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            with patch.object(devcode, "_load_settings",
+                               return_value={"template_sources": [os.path.abspath(".")]}):
+                result = runner.invoke(devcode.cli, ["new", "myapp", "no-such-base"])
+        self.assertNotEqual(result.exit_code, 0)
 
-    def test_open_index3_returns_empty(self):
-        result = self._run(3, ["devcode", "open", "mytemplate", ""])
+    def test_ps_no_docker_exits(self):
+        runner = CliRunner()
+        with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
+            result = runner.invoke(devcode.cli, ["ps"])
+        self.assertNotEqual(result.exit_code, 0)
+
+
+class TestCompleteTemplates(unittest.TestCase):
+    def test_returns_all_when_incomplete_is_empty(self):
+        with patch.object(devcode, "_list_template_names", return_value=["alpha", "beta", "gamma"]):
+            result = devcode._complete_templates(None, None, "")
+        names = [item.value for item in result]
+        self.assertEqual(sorted(names), ["alpha", "beta", "gamma"])
+
+    def test_filters_by_prefix(self):
+        with patch.object(devcode, "_list_template_names", return_value=["alpha", "beta", "gamma"]):
+            result = devcode._complete_templates(None, None, "al")
+        names = [item.value for item in result]
+        self.assertEqual(names, ["alpha"])
+
+    def test_returns_empty_when_no_match(self):
+        with patch.object(devcode, "_list_template_names", return_value=["alpha", "beta"]):
+            result = devcode._complete_templates(None, None, "z")
         self.assertEqual(result, [])
-
-    def test_open_index4_returns_empty(self):
-        result = self._run(4, ["devcode", "open", "mytemplate", "/path", ""])
-        self.assertEqual(result, [])
-
-    def test_open_flag_completion_at_index3(self):
-        result = self._run(3, ["devcode", "open", "mytemplate", "--"])
-        self.assertIn("--dry-run", result)
-        self.assertIn("--container-folder", result)
-        self.assertIn("--timeout", result)
-
-    def test_open_flag_completion_at_index2(self):
-        result = self._run(2, ["devcode", "open", "--"])
-        self.assertIn("--dry-run", result)
-
-    def test_new_index2_returns_empty(self):
-        result = self._run(2, ["devcode", "new", ""])
-        self.assertEqual(result, [])
-
-    def test_new_index3_returns_template_names(self):
-        result = self._run(3, ["devcode", "new", "myname", ""], template_names=["base1"])
-        self.assertIn("base1", result)
-
-    def test_new_flag_completion(self):
-        result = self._run(2, ["devcode", "new", "--"])
-        self.assertEqual(result, ["--edit"])
-
-    def test_edit_index2_returns_template_names(self):
-        result = self._run(2, ["devcode", "edit", ""], template_names=["mytemplate"])
-        self.assertIn("mytemplate", result)
-
-    def test_edit_index3_returns_empty(self):
-        result = self._run(3, ["devcode", "edit", "mytemplate", ""])
-        self.assertEqual(result, [])
-
-    def test_edit_flag_returns_empty(self):
-        result = self._run(2, ["devcode", "edit", "--"])
-        self.assertEqual(result, [])
-
-    def test_list_index2_returns_long(self):
-        result = self._run(2, ["devcode", "list", ""])
-        self.assertEqual(result, ["--long"])
-
-    def test_list_higher_index_returns_long(self):
-        result = self._run(3, ["devcode", "list", "--long", ""])
-        self.assertEqual(result, ["--long"])
-
-    def test_list_prefix_filter_long(self):
-        result = self._run(2, ["devcode", "list", "--l"])
-        self.assertEqual(result, ["--long"])
-
-    def test_list_partial_word_no_match_returns_empty(self):
-        # list branch fires unconditionally; prefix filter removes --long when current_word="x"
-        result = self._run(2, ["devcode", "list", "x"])
-        self.assertEqual(result, [])
-
-    def test_ps_returns_empty(self):
-        result = self._run(2, ["devcode", "ps", ""])
-        self.assertEqual(result, [])
-
-    def test_ps_flags_completion(self):
-        result = self._run(2, ["devcode", "ps", "-"])
-        self.assertIn("-a", result)
-        self.assertIn("-i", result)
-
-    def test_completion_index2_returns_shells(self):
-        result = self._run(2, ["devcode", "completion", ""])
-        self.assertIn("bash", result)
-        self.assertIn("zsh", result)
-
-    def test_completion_index2_prefix_filter(self):
-        result = self._run(2, ["devcode", "completion", "b"])
-        self.assertEqual(result, ["bash"])
-
-    def test_completion_index3_returns_empty(self):
-        result = self._run(3, ["devcode", "completion", "bash", ""])
-        self.assertEqual(result, [])
-
-    def test_empty_complete_words_exits_zero_no_output(self):
-        args = argparse.Namespace(complete_words=[], shell=None)
-        captured = []
-        with patch("builtins.print", side_effect=lambda x: captured.append(x)):
-            with self.assertRaises(SystemExit) as cm:
-                devcode.cmd_completion(args)
-        self.assertEqual(cm.exception.code, 0)
-        self.assertEqual(captured, [])
-
-    def test_non_integer_cword_exits_zero_no_output(self):
-        args = argparse.Namespace(complete_words=["notanint", "dev-code", "open"], shell=None)
-        captured = []
-        with patch("builtins.print", side_effect=lambda x: captured.append(x)):
-            with self.assertRaises(SystemExit) as cm:
-                devcode.cmd_completion(args)
-        self.assertEqual(cm.exception.code, 0)
-        self.assertEqual(captured, [])
-
-    def test_out_of_range_cword_exits_zero_no_output(self):
-        args = argparse.Namespace(complete_words=["5", "dev-code", "open"], shell=None)
-        captured = []
-        with patch("builtins.print", side_effect=lambda x: captured.append(x)):
-            with self.assertRaises(SystemExit) as cm:
-                devcode.cmd_completion(args)
-        self.assertEqual(cm.exception.code, 0)
-        self.assertEqual(captured, [])
-
-    def test_cword_index0_returns_empty(self):
-        # index 0 is the command name slot — nothing to complete
-        result = self._run(0, ["devcode"])
-        self.assertEqual(result, [])
-
-
-class TestCmdCompletion(unittest.TestCase):
-    def _capture(self, shell):
-        args = argparse.Namespace(shell=shell, complete_words=None)
-        buf = io.StringIO()
-        with patch("builtins.print", side_effect=lambda *a, **kw: buf.write(a[0] if a else "")):
-            devcode.cmd_completion(args)
-        return buf.getvalue()
-
-    def test_bash_contains_function_name(self):
-        output = self._capture("bash")
-        self.assertIn("_dev_code", output)
-
-    def test_bash_contains_complete_registration(self):
-        output = self._capture("bash")
-        self.assertIn("complete -F", output)
-
-    def test_bash_contains_mapfile(self):
-        output = self._capture("bash")
-        self.assertIn("mapfile", output)
-
-    def test_zsh_contains_function_name(self):
-        output = self._capture("zsh")
-        self.assertIn("_dev_code", output)
-
-    def test_zsh_contains_compdef(self):
-        output = self._capture("zsh")
-        self.assertIn("compdef", output)
-
-    def test_zsh_contains_compinit_warning(self):
-        output = self._capture("zsh")
-        self.assertIn("compinit", output)
-
-    def test_unknown_shell_exits_1(self):
-        args = argparse.Namespace(shell="fish", complete_words=None)
-        with self.assertRaises(SystemExit) as cm:
-            devcode.cmd_completion(args)
-        self.assertEqual(cm.exception.code, 1)

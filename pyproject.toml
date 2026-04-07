@@ -1,14 +1,16 @@
 [build-system]
-requires = ["hatchling", "hatch-vcs"]
+requires = ["hatchling", "hatch-vcs", "hatch-fancy-pypi-readme"]
 build-backend = "hatchling.build"
 
 [project]
 name = "dev-code"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 description = "Project · editor · container — simplified"
-readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+authors = [
+    {name = "Nasser Alansari", email = "dacrystal@users.noreply.github.com"},
+]
+dependencies = ["click>=8.0"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -24,7 +26,7 @@ classifiers = [
 "Issues" = "https://github.com/dacrystal/dev-code/issues"
 
 [project.scripts]
-devcode = "devcode:main"
+devcode = "devcode:cli"
 
 [tool.hatch.version]
 source = "vcs"
@@ -34,12 +36,18 @@ force-include = {"src/devcode.py" = "devcode.py", "src/templates" = "dev_code_te
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [dependency-groups]
-dev = [
-    "pytest>=7.0.1",
-    "pyfiglet>=1.0.4",
-    "pytest-cov>=4.0",
-    "tox>=4.0",
-    "pyyaml>=6.0",
-]
+test = ["pytest>=7", "pytest-cov>=4"]
+dev = ["tox>=4", "pyyaml>=6", "git-cliff>=2"]
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '\(assets/'
+replacement = "(https://raw.githubusercontent.com/dacrystal/dev-code/main/assets/"
