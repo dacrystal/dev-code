@@ -36,16 +36,11 @@ force-include = {"src/devcode.py" = "devcode.py", "src/templates" = "dev_code_te
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [dependency-groups]
-dev = [
-    "pytest>=7.0.1",
-    "pyfiglet>=1.0.4",
-    "pytest-cov>=4.0",
-    "tox>=4.0",
-    "pyyaml>=6.0",
-    "git-cliff>=2.0",
-]
+test = ["pytest>=7", "pytest-cov>=4"]
+dev = ["tox>=4", "pyyaml>=6", "git-cliff>=2"]
 
 [tool.hatch.metadata.hooks.fancy-pypi-readme]
 content-type = "text/markdown"
