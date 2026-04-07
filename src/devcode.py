@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import argparse
+import click
+import click.shell_completion
 import importlib.metadata
 import json
 import logging
@@ -29,38 +30,6 @@ _DEFAULT_SETTINGS = {
     "template_sources": ["~/.local/share/dev-code/templates"],
     "default_template": "dev-code",
 }
-
-_BASH_COMPLETION = """\
-# devcode bash completion
-# Requires bash 4.0+ (macOS ships bash 3.2; install bash 5 via Homebrew if needed).
-_dev_code() {
-    local -a candidates
-    mapfile -t candidates < <(devcode completion --complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null)
-    if [[ ${#candidates[@]} -eq 0 ]]; then
-        local cur="${COMP_WORDS[COMP_CWORD]}"
-        mapfile -t COMPREPLY < <(compgen -f -- "$cur")
-    else
-        COMPREPLY=("${candidates[@]}")
-    fi
-}
-complete -F _dev_code devcode
-"""
-
-_ZSH_COMPLETION = """\
-# devcode zsh completion
-_dev_code() {
-    local candidates
-    candidates=$(devcode completion --complete "$(( CURRENT - 1 ))" "${words[@]}" 2>/dev/null)
-    if [[ -z "$candidates" ]]; then
-        _files
-    else
-        compadd -- ${(f)candidates}
-    fi
-}
-# Note: compdef requires compinit to have been called first.
-compdef _dev_code devcode
-"""
-
 
 def _configure_logging(verbose: bool) -> None:
     """Configure the module logger. Guard prevents double-registration."""
@@ -593,12 +562,12 @@ def _find_container_config_for_project(project_path: str) -> str | None:
     return None
 
 
-def cmd_open(args) -> None:
-    """open subcommand: open a project in VS Code using a devcontainer template."""
-    project_path = os.path.abspath(args.projectpath)
+def _do_open(projectpath: str, template, container_folder, timeout: int, dry_run: bool) -> None:
+    """Core open logic shared by the open command and internal callers."""
+    project_path = os.path.abspath(projectpath)
 
     if not os.path.exists(project_path):
-        logger.error("projectpath not found: %s", args.projectpath)
+        logger.error("projectpath not found: %s", projectpath)
         sys.exit(1)
 
     if project_path == "/":
@@ -616,8 +585,8 @@ def cmd_open(args) -> None:
             )
             sys.exit(1)
 
-    if args.template:
-        config_file = resolve_template(args.template)
+    if template:
+        config_file = resolve_template(template)
     else:
         config_file = _find_container_config_for_project(project_path)
         if config_file is None:
@@ -630,10 +599,10 @@ def cmd_open(args) -> None:
                 sys.exit(1)
             config_file = resolve_template(default)
 
-    container_folder = args.container_folder or f"/workspaces/{os.path.basename(project_path)}"
+    container_folder = container_folder or f"/workspaces/{os.path.basename(project_path)}"
     uri = build_devcontainer_uri(project_path, config_file, container_folder)
 
-    if args.dry_run:
+    if dry_run:
         _cmd_open_dry_run(config_file, project_path, uri)
         return
 
@@ -642,7 +611,7 @@ def cmd_open(args) -> None:
         sys.exit(1)
 
     subprocess.Popen(["code", "--folder-uri", uri], start_new_session=True)
-    run_post_launch(config_file, project_path, args.timeout)
+    run_post_launch(config_file, project_path, timeout)
 
 
 def _cmd_open_dry_run(config_file: str, project_path: str, uri: str) -> None:
@@ -686,18 +655,70 @@ def _cmd_open_dry_run(config_file: str, project_path: str, uri: str) -> None:
     print("(dry run — no operations executed)")
 
 
-def cmd_new(args) -> None:
+def _template_name_from_config(config_path: str) -> str:
+    """Extract template name as the directory immediately above .devcontainer/."""
+    norm = os.path.normpath(config_path)
+    parts = norm.replace("\\", "/").split("/")
+    for i, part in enumerate(parts):
+        if part == ".devcontainer" and i > 0:
+            return parts[i - 1]
+    return os.path.basename(os.path.dirname(os.path.dirname(norm)))
+
+
+def _complete_templates(ctx, param, incomplete):
+    """Shell completion callback: return template names matching the incomplete prefix."""
+    return [
+        click.shell_completion.CompletionItem(t)
+        for t in _list_template_names()
+        if t.startswith(incomplete)
+    ]
+
+
+@click.group(invoke_without_command=True)
+@click.version_option(package_name="dev-code", prog_name="devcode")
+@click.option(
+    "-v", "--verbose",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=lambda ctx, param, v: _configure_logging(v),
+)
+@click.pass_context
+def cli(ctx):
+    """project · editor · container — simplified."""
+    if ctx.invoked_subcommand is None:
+        click.echo(BANNER)
+        click.echo(ctx.get_help())
+
+
+@cli.command("open")
+@click.argument("projectpath")
+@click.argument("template", required=False, shell_complete=_complete_templates)
+@click.option("--container-folder", default=None, help="Path inside the container.")
+@click.option("--timeout", type=int, default=300, show_default=True,
+              help="Seconds to wait for devcontainer to start.")
+@click.option("--dry-run", is_flag=True, help="Print plan without executing.")
+def open_command(projectpath, template, container_folder, timeout, dry_run):
+    """Open a project in VS Code using a devcontainer template."""
+    _do_open(projectpath, template, container_folder, timeout, dry_run)
+
+
+@cli.command("new")
+@click.argument("name")
+@click.argument("base", required=False)
+@click.option("--edit", is_flag=True, help="Open the new template in VS Code after creating it.")
+def new_command(name, base, edit):
     """Create a new template by copying a base template."""
     write_dir = _write_template_dir()
-    dest = os.path.join(write_dir, args.name)
+    dest = os.path.join(write_dir, name)
 
     # Step 1: fail if name already exists
     if os.path.exists(dest):
-        logger.error("template '%s' already exists: %s", args.name, dest)
+        logger.error("template '%s' already exists: %s", name, dest)
         sys.exit(1)
 
     # Step 2: resolve base — search all dirs, then builtins
-    base_name = args.base or "dev-code"
+    base_name = base or "dev-code"
     base_root = _find_template_in_search_path(base_name)
     if base_root:
         base_src = base_root
@@ -718,32 +739,35 @@ def cmd_new(args) -> None:
 
     # Step 5: copy
     shutil.copytree(base_src, dest)
-    print(f"Created template '{args.name}' at {dest}")
+    print(f"Created template '{name}' at {dest}")
 
     # Step 6: --edit
-    if args.edit:
-        open_args = argparse.Namespace(
-            template=args.name,
+    if edit:
+        _do_open(
             projectpath=dest,
+            template=name,
             container_folder=None,
             timeout=300,
             dry_run=False,
         )
-        cmd_open(open_args)
 
 
-def cmd_edit(args) -> None:
-    """Open a template directory directly in VS Code for editing."""
-    template_root = _find_template_in_search_path(args.template)
+@cli.command("edit")
+@click.argument("template", shell_complete=_complete_templates)
+def edit_command(template):
+    """Open a template directory in VS Code for editing."""
+    template_root = _find_template_in_search_path(template)
     if template_root is None:
-        logger.error("template not found: %s", args.template)
+        logger.error("template not found: %s", template)
         sys.exit(1)
     subprocess.run(["code", template_root])
 
 
-def cmd_list(args) -> None:
+@cli.command("list")
+@click.option("--long", is_flag=True, help="Show description and path for each template.")
+def list_command(long):
     """List available templates."""
-    if not args.long:
+    if not long:
         names = _list_template_names()
         for name in names:
             print(name)
@@ -780,18 +804,11 @@ def cmd_list(args) -> None:
         print(_fmt_row(row, widths))
 
 
-def _template_name_from_config(config_path: str) -> str:
-    """Extract template name as the directory immediately above .devcontainer/."""
-    norm = os.path.normpath(config_path)
-    parts = norm.replace("\\", "/").split("/")
-    for i, part in enumerate(parts):
-        if part == ".devcontainer" and i > 0:
-            return parts[i - 1]
-    return os.path.basename(os.path.dirname(os.path.dirname(norm)))
-
-
-def cmd_ps(args) -> None:
-    """List devcontainers (running by default; all with -a)."""
+@cli.command("ps")
+@click.option("-a", "--all", "show_all", is_flag=True, help="Show all containers (not just running).")
+@click.option("-i", "--interactive", is_flag=True, help="Prompt to reopen a listed container.")
+def ps_command(show_all, interactive):
+    """List dev containers."""
     fmt = "{{.CreatedAt}}\t{{.ID}}\t{{.Label \"devcontainer.local_folder\"}}\t{{.Label \"devcontainer.config_file\"}}\t{{.Status}}"
     result = subprocess.run(
         ["docker", "container", "ls", "-a",
@@ -810,14 +827,14 @@ def cmd_ps(args) -> None:
     rows = [r[1:] for r in rows]  # now: [cid, local_folder, config_file, status]
 
     # Filter: without -a keep only running containers
-    if not args.all:
+    if not show_all:
         rows = [r for r in rows if len(r) >= 4 and r[3].startswith("Up")]
 
     # Always drop malformed rows so rows and display stay parallel
     rows = [r for r in rows if len(r) >= 4]
 
     if not rows:
-        print("no devcontainers" if args.all else "no running devcontainers")
+        print("no devcontainers" if show_all else "no running devcontainers")
         return
 
     # Build display rows: (num, cid, template, path, status)
@@ -834,7 +851,7 @@ def cmd_ps(args) -> None:
     for row in display:
         print(_fmt_row(row, widths))
 
-    if not args.interactive:
+    if not interactive:
         return
 
     choice = input(f"\nOpen [1-{len(display)}]: ").strip()
@@ -877,144 +894,14 @@ def cmd_ps(args) -> None:
     if not container_folder:
         container_folder = f"/workspaces/{os.path.basename(local_folder)}"
 
-    open_args = argparse.Namespace(
-        template=config_file,
+    _do_open(
         projectpath=projectpath,
+        template=config_file,
         container_folder=container_folder,
         timeout=300,
         dry_run=False,
     )
-    cmd_open(open_args)
-
-
-_SUBCOMMANDS = ["open", "new", "edit", "list", "ps", "completion"]
-
-_SUBCOMMAND_FLAGS = {
-    "open": ["--dry-run", "--container-folder", "--timeout"],
-    "new": ["--edit"],
-    "edit": [],
-    "list": ["--long"],
-    "ps": ["-a", "-i"],
-    "completion": [],
-}
-
-
-def cmd_completion(args) -> None:
-    """completion subcommand: print shell completion script or candidates to stdout."""
-    if args.complete_words is not None:
-        # Internal path: called by the shell completion scripts.
-        # Always exits 0; prints nothing on any error.
-        try:
-            words = args.complete_words
-            if not words:
-                sys.exit(0)
-            try:
-                cword_index = int(words[0])
-            except ValueError:
-                sys.exit(0)
-            words = words[1:]
-
-            if not (0 <= cword_index < len(words)):
-                sys.exit(0)
-
-            current_word = words[cword_index]
-
-            if cword_index == 1:
-                candidates = _SUBCOMMANDS
-            else:
-                subcommand = words[1] if len(words) > 1 else ""
-                if subcommand == "list":
-                    candidates = ["--long"]
-                elif subcommand == "completion":
-                    candidates = ["bash", "zsh"] if cword_index == 2 else []
-                elif current_word.startswith("-"):
-                    candidates = _SUBCOMMAND_FLAGS.get(subcommand, [])
-                else:
-                    if subcommand == "open" and cword_index == 3:
-                        candidates = _list_template_names()
-                    elif subcommand == "new" and cword_index == 3:
-                        candidates = _list_template_names()
-                    elif subcommand == "edit" and cword_index == 2:
-                        candidates = _list_template_names()
-                    else:
-                        candidates = []
-
-            for c in candidates:
-                if c.startswith(current_word):
-                    print(c)
-        except Exception:
-            pass
-        sys.exit(0)
-
-    if args.shell == "bash":
-        print(_BASH_COMPLETION, end="")
-    elif args.shell == "zsh":
-        print(_ZSH_COMPLETION, end="")
-    else:
-        logger.error("unknown shell %r: supported shells are bash and zsh", args.shell)
-        sys.exit(1)
-
-
-class _BannerParser(argparse.ArgumentParser):
-    """ArgumentParser that shows the banner only in full --help output, not in error usage lines."""
-
-    def format_help(self):
-        return BANNER + "\n\n" + super().format_help()
-
-
-def main():
-    try:
-        _version = importlib.metadata.version("dev-code")
-    except importlib.metadata.PackageNotFoundError:
-        _version = "(dev)"
-
-    parser = _BannerParser(prog="devcode")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {_version}")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    subparsers = parser.add_subparsers(dest="subcommand")
-
-    p_open = subparsers.add_parser("open")
-    p_open.add_argument("projectpath")
-    p_open.add_argument("template", nargs="?")
-    p_open.add_argument("--container-folder")
-    p_open.add_argument("--timeout", type=int, default=300)
-    p_open.add_argument("--dry-run", action="store_true", dest="dry_run")
-
-    p_new = subparsers.add_parser("new")
-    p_new.add_argument("name")
-    p_new.add_argument("base", nargs="?")
-    p_new.add_argument("--edit", action="store_true")
-
-    p_edit = subparsers.add_parser("edit")
-    p_edit.add_argument("template")
-
-    p_list = subparsers.add_parser("list")
-    p_list.add_argument("--long", action="store_true")
-
-    p_ps = subparsers.add_parser("ps")
-    p_ps.add_argument("-a", "--all", action="store_true", dest="all")
-    p_ps.add_argument("-i", "--interactive", action="store_true", dest="interactive")
-
-    p_completion = subparsers.add_parser("completion")
-    p_completion.add_argument("shell", nargs="?")
-    p_completion.add_argument("--complete", nargs="*", dest="complete_words", help=argparse.SUPPRESS)
-
-    args = parser.parse_args()
-    if args.subcommand is None:
-        parser.print_help()
-        sys.exit(0)
-    _configure_logging(args.verbose)
-
-    dispatch = {
-        "open": cmd_open,
-        "new": cmd_new,
-        "edit": cmd_edit,
-        "list": cmd_list,
-        "ps": cmd_ps,
-        "completion": cmd_completion,
-    }
-    dispatch[args.subcommand](args)
 
 
 if __name__ == "__main__":
-    main()
+    cli()
