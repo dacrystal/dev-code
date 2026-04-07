@@ -42,4 +42,3 @@ filter_commits = true
 protect_breaking_commits = true
 sort_commits = "oldest"
 topo_order = false
-skip_tags = "v*.*.*.post"
