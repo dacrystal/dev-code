@@ -10,6 +10,8 @@
   project · editor · container — simplified
 ```
 
+![](assets/demo.png "Demo gif")
+
 [![GitHub](https://img.shields.io/badge/github-dacrystal%2Fdev--code-blue?logo=github)](https://github.com/dacrystal/dev-code)
 [![Coverage](https://codecov.io/gh/dacrystal/dev-code/branch/main/graph/badge.svg)](https://codecov.io/gh/dacrystal/dev-code)
 [![PyPI version](https://img.shields.io/pypi/v/dev-code)](https://pypi.org/project/dev-code/)
@@ -18,17 +20,25 @@
 
 Reusable Dev Containers for any project — without modifying the repository.
 
+## Table of Contents
+
+- [Background](#background)
+- [Install](#install)
+- [Usage](#usage)
+- [API](#api)
+- [Configuration](#configuration)
+- [Template System](#template-system)
+- [File Injection](#file-injection)
+- [Contributing](#contributing)
+- [License](#license)
+
 ---
 
-![](assets/demo.png "Demo gif")
+## Background
 
 `devcode` is a CLI that opens any project in VS Code Dev Containers using reusable, local templates.
 
 Define your environment once and reuse it across projects.
-
----
-
-## Why devcode?
 
 Typical Dev Container workflows involve:
 
@@ -44,48 +54,65 @@ Typical Dev Container workflows involve:
 
 ---
 
-## Quick Start
+## Install
+
+### Prerequisites
+
+- VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+- Docker
 
 ```bash
-# Install
 pip install dev-code
+```
 
+---
+
+## Usage
+
+```bash
 # Open a project (auto-detects template from container history, or uses default)
 devcode open ~/projects/my-app
 
 # Open with an explicit template
 devcode open ~/projects/my-app dev-code
+```
 
-# Reopen projects later
+### Typical Workflow
+
+```bash
+devcode new python-dev
+devcode edit python-dev
+devcode open ~/projects/my-app python-dev
+```
+
+### Project Switching
+
+```bash
 devcode ps -a -i
 ```
 
----
+Lists containers and allows reopening projects interactively.
 
-## Requirements
+### Advanced Options
 
-* VS Code with the Dev Containers extension
-* Docker
+- Multiple template directories
+- Template inheritance
+- Verbose debugging (`-v`)
+- Dry runs (`--dry-run`)
+- Custom container paths
 
----
+### Internal Flow
 
-## Core Concepts
-
-### Templates
-
-Templates are reusable devcontainer configurations stored locally.
-
-Default location:
-
-```
-~/.local/share/dev-code/templates/
-```
-
-Override search paths via `settings.json` (see [Configuration](#configuration)).
+1. Validate project path (must exist)
+2. Resolve template (explicit → container history → settings default)
+3. Launch VS Code Dev Container
+4. Apply file injection rules
 
 ---
 
-## Command Reference
+## API
+
+Full reference for all `devcode` commands and flags.
 
 ### Global Flags
 
@@ -213,16 +240,6 @@ eval "$(devcode completion bash)"
 
 ---
 
-## Typical Workflow
-
-```bash
-devcode new python-dev
-devcode edit python-dev
-devcode open ~/projects/my-app python-dev
-```
-
----
-
 ## Configuration
 
 devcode reads `settings.json` from:
@@ -263,11 +280,11 @@ The file is created automatically with defaults on first run.
 ~/.local/share/dev-code/templates/
 ```
 
-Configure additional paths via `template_sources` in `settings.json`.
+Configure additional paths via `template_sources` in `settings.json` (see [Configuration](#configuration)).
 
 ---
 
-## File Injection (cp)
+## File Injection
 
 Inject files from the host into the container at startup.
 
@@ -335,35 +352,15 @@ Copies directory contents instead of the directory itself.
 
 ---
 
-## Project Switching
+## Contributing
 
-```bash
-devcode ps -a -i
-```
+- PRs welcome. Open an issue first for significant changes.
+- Run `tox` (or `pytest` for a single-interpreter run) before submitting.
 
-Lists containers and allows reopening projects interactively.
-
----
-
-## Advanced Options
-
-* Multiple template directories
-* Template inheritance
-* Verbose debugging (`-v`)
-* Dry runs (`--dry-run`)
-* Custom container paths
-
----
-
-## Internal Flow
-
-1. Validate project path (must exist)
-2. Resolve template (explicit → container history → settings default)
-3. Launch VS Code Dev Container
-4. Apply file injection rules
+Report bugs or request features in [Issues](https://github.com/dacrystal/dev-code/issues).
 
 ---
 
 ## License
 
-MIT
+MIT © Nasser Alansari (dacrystal)
