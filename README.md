@@ -231,12 +231,20 @@ Selecting a number reopens the project in VS Code.
 ```bash
 devcode completion bash
 devcode completion zsh
+devcode completion fish
 ```
 
-Enable in shell:
+Add to your shell rc file for persistent completion:
 
 ```bash
+# bash (~/.bashrc)
 eval "$(devcode completion bash)"
+
+# zsh (~/.zshrc)
+eval "$(devcode completion zsh)"
+
+# fish (~/.config/fish/config.fish)
+eval (devcode completion fish)
 ```
 
 ---

@@ -2003,6 +2003,32 @@ class TestBanner(unittest.TestCase):
         self.assertIn("project · editor · container", result.output)
 
 
+class TestBannerInHelp(unittest.TestCase):
+    def test_help_shows_ascii_art(self):
+        """Full ASCII banner must appear in --help output."""
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("__| | _____", result.output)
+
+    def test_banner_has_trailing_newline(self):
+        """BANNER must end with a newline for bottom padding."""
+        self.assertTrue(devcode.BANNER.endswith("\n"))
+
+    def test_help_description_is_not_tagline(self):
+        """The old tagline docstring must be replaced with a proper description."""
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["--help"])
+        self.assertIn("Open projects in VS Code Dev Containers", result.output)
+
+    def test_no_args_shows_banner(self):
+        """Banner must appear when devcode is run with no arguments."""
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, [])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("__| | _____", result.output)
+
+
 class TestListTemplateNames(unittest.TestCase):
     def _make_template(self, base_dir, name):
         p = os.path.join(base_dir, name, ".devcontainer")
@@ -2142,6 +2168,33 @@ class TestConftest(unittest.TestCase):
         self.assertIsNotNone(shutil.which("code"))
 
 
+class TestShellCompletion(unittest.TestCase):
+    def test_open_projectpath_is_path_type(self):
+        """open's projectpath must use click.Path() so shells offer filesystem completion."""
+        import click
+        open_cmd = devcode.cli.commands["open"]
+        param = next(p for p in open_cmd.params if p.name == "projectpath")
+        self.assertIsInstance(param.type, click.Path)
+
+    def test_new_base_has_template_completion(self):
+        """new's base argument must have _complete_templates as its shell_complete callback."""
+        new_cmd = devcode.cli.commands["new"]
+        param = next(p for p in new_cmd.params if p.name == "base")
+        self.assertIs(param._custom_shell_complete, devcode._complete_templates)
+
+    def test_open_template_has_template_completion(self):
+        """open's template argument must use _complete_templates for shell completion."""
+        open_cmd = devcode.cli.commands["open"]
+        param = next(p for p in open_cmd.params if p.name == "template")
+        self.assertIs(param._custom_shell_complete, devcode._complete_templates)
+
+    def test_edit_template_has_template_completion(self):
+        """edit's template argument must use _complete_templates for shell completion."""
+        edit_cmd = devcode.cli.commands["edit"]
+        param = next(p for p in edit_cmd.params if p.name == "template")
+        self.assertIs(param._custom_shell_complete, devcode._complete_templates)
+
+
 class TestStartupCheck(unittest.TestCase):
     def test_exits_if_devcontainer_not_on_path(self):
         runner = CliRunner()
@@ -2154,3 +2207,36 @@ class TestStartupCheck(unittest.TestCase):
         with patch("shutil.which", side_effect=lambda x: None if x == "devcontainer" else "/usr/bin/code"):
             result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
         self.assertIn("devcontainer CLI not found on PATH", result.stderr)
+
+    def test_load_settings_called_on_every_invocation(self):
+        """_load_settings() must run even when only --help is passed."""
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={}) as mock_settings:
+            runner.invoke(devcode.cli, ["--help"])
+        mock_settings.assert_called_once()
+
+
+class TestCompletionCommand(unittest.TestCase):
+    def test_bash_output(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["completion", "bash"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), 'eval "$(_DEVCODE_COMPLETE=bash_source devcode)"')
+
+    def test_zsh_output(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["completion", "zsh"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), 'eval "$(_DEVCODE_COMPLETE=zsh_source devcode)"')
+
+    def test_fish_output(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["completion", "fish"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), "eval (env _DEVCODE_COMPLETE=fish_source devcode)")
+
+    def test_invalid_shell_exits_nonzero(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["completion", "powershell"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Invalid value", result.output)

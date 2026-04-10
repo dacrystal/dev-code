@@ -21,7 +21,7 @@ BANNER = (
     " / _` |/ _ \\ \\ / /______/ __/ _ \\ / _` |/ _ \\\n"
     "| (_| |  __/\\ V /      | (_| (_) | (_| |  __/\n"
     " \\__,_|\\___| \\_/        \\___\\___/ \\__,_|\\___|\n"
-    "  project · editor · container — simplified  "
+    "  project · editor · container — simplified\n"
 )
 
 KNOWN_CP_FIELDS = {"source", "target", "override", "owner", "group", "permissions"}
@@ -642,7 +642,20 @@ def _complete_templates(ctx, param, incomplete):
     ]
 
 
-@click.group(invoke_without_command=True)
+class _DevCodeGroup(click.Group):
+    """Custom CLI group: loads settings eagerly and prepends banner to help output."""
+    def main(self, *args, **kwargs):
+        # Trigger settings file creation/validation before any CLI output (including --help).
+        _load_settings()
+        return super().main(*args, **kwargs)
+
+    def format_help(self, ctx, formatter):
+        formatter.write(BANNER)
+        formatter.write_paragraph()
+        super().format_help(ctx, formatter)
+
+
+@click.group(invoke_without_command=True, cls=_DevCodeGroup)
 @click.version_option(package_name="dev-code", prog_name="devcode")
 @click.option(
     "-v", "--verbose",
@@ -653,17 +666,16 @@ def _complete_templates(ctx, param, incomplete):
 )
 @click.pass_context
 def cli(ctx):
-    """project · editor · container — simplified."""
+    """Open projects in VS Code Dev Containers using reusable local templates."""
     if not shutil.which("devcontainer"):
         click.echo("error: devcontainer CLI not found on PATH", err=True)
         raise click.exceptions.Exit(1)
     if ctx.invoked_subcommand is None:
-        click.echo(BANNER)
         click.echo(ctx.get_help())
 
 
 @cli.command("open")
-@click.argument("projectpath")
+@click.argument("projectpath", type=click.Path(file_okay=False, resolve_path=True))
 @click.argument("template", required=False, shell_complete=_complete_templates)
 @click.option("--container-folder", default=None, help="Path inside the container. Default: resolved from devcontainer config.")
 @click.option("--timeout", type=int, default=300, show_default=True,
@@ -676,7 +688,7 @@ def open_command(projectpath, template, container_folder, timeout, dry_run):
 
 @cli.command("new")
 @click.argument("name")
-@click.argument("base", required=False)
+@click.argument("base", required=False, shell_complete=_complete_templates)
 @click.option("--edit", is_flag=True, help="Open the new template in VS Code after creating it.")
 def new_command(name, base, edit):
     """Create a new template by copying a base template."""
@@ -773,6 +785,16 @@ def list_command(long):
     print(_fmt_row(headers, widths))
     for row in display:
         print(_fmt_row(row, widths))
+
+
+@cli.command("completion")
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion_command(shell):
+    """Print shell completion setup command."""
+    if shell == "fish":
+        click.echo("eval (env _DEVCODE_COMPLETE=fish_source devcode)")
+    else:
+        click.echo(f'eval "$(_DEVCODE_COMPLETE={shell}_source devcode)"')
 
 
 @cli.command("ps")
