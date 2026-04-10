@@ -60,6 +60,7 @@ Typical Dev Container workflows involve:
 
 - VS Code with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
 - Docker
+- [devcontainer CLI](https://github.com/devcontainers/cli)
 
 ```bash
 pip install dev-code
@@ -154,7 +155,7 @@ Open a project in VS Code using a devcontainer template.
 | Option                      | Default                 | Description                                                |
 | --------------------------- | ----------------------- | ---------------------------------------------------------- |
 | `--dry-run`                 | —                       | Print resolved configuration and actions without executing |
-| `--container-folder <path>` | `/workspaces/<project>` | Container mount path                                       |
+| `--container-folder <path>` | resolved from devcontainer config | Container mount path                                       |
 | `--timeout <seconds>`       | `300`                   | Time to wait for container startup                         |
 
 ---

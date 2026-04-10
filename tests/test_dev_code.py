@@ -36,61 +36,44 @@ class TestSmoke(unittest.TestCase):
 
 
 class TestParseDevcontainerJson(unittest.TestCase):
-    def _write_json(self, content: str) -> str:
-        """Write content to a temp file, return path."""
-        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
-        f.write(content)
-        f.close()
-        self.addCleanup(os.unlink, f.name)
-        return f.name
+    def test_returns_full_cli_output(self):
+        raw = {
+            "configuration": {"name": "Dev"},
+            "workspace": {"workspaceFolder": "/workspaces/myproject"}
+        }
+        mock_result = MagicMock(returncode=0, stdout=json.dumps(raw))
+        with patch("subprocess.run", return_value=mock_result):
+            data = devcode.parse_devcontainer_json("/fake/devcontainer.json")
+        self.assertEqual(data["configuration"]["name"], "Dev")
+        self.assertEqual(data["workspace"]["workspaceFolder"], "/workspaces/myproject")
 
-    def test_fallback_plain_json(self):
-        path = self._write_json('{"name": "Dev"}')
-        data, cli_used = devcode.parse_devcontainer_json(path)
-        self.assertEqual(data["name"], "Dev")
-        self.assertFalse(cli_used)
+    def test_exits_on_cli_failure(self):
+        mock_result = MagicMock(returncode=1, stderr="some error")
+        with patch("subprocess.run", return_value=mock_result):
+            with self.assertRaises(SystemExit):
+                devcode.parse_devcontainer_json("/fake/devcontainer.json")
 
-    def test_fallback_strips_line_comments(self):
-        content = '// top comment\n{"name": "Dev"}'
-        path = self._write_json(content)
-        data, cli_used = devcode.parse_devcontainer_json(path)
-        self.assertEqual(data["name"], "Dev")
+    def test_calls_read_configuration_with_config_flag(self):
+        raw = {"configuration": {}, "workspace": {}}
+        mock_result = MagicMock(returncode=0, stdout=json.dumps(raw))
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            devcode.parse_devcontainer_json("/fake/devcontainer.json")
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd, ["devcontainer", "read-configuration", "--config", "/fake/devcontainer.json"])
 
-    def test_fallback_strips_trailing_commas(self):
-        content = '{"features": {"uv": {},}}'
-        path = self._write_json(content)
-        data, _ = devcode.parse_devcontainer_json(path)
-        self.assertIn("features", data)
+    def test_cwd_passed_to_subprocess(self):
+        raw = {"configuration": {}, "workspace": {}}
+        mock_result = MagicMock(returncode=0, stdout=json.dumps(raw))
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            devcode.parse_devcontainer_json("/fake/devcontainer.json", cwd="/my/project")
+        self.assertEqual(mock_run.call_args.kwargs["cwd"], "/my/project")
 
-    def test_fallback_preserves_url_strings(self):
-        content = '{"image": "https://example.com/image"}'
-        path = self._write_json(content)
-        data, _ = devcode.parse_devcontainer_json(path)
-        self.assertEqual(data["image"], "https://example.com/image")
-
-    def test_fallback_parse_error_exits(self):
-        path = self._write_json("not json at all {{{")
-        with self.assertRaises(SystemExit):
-            devcode.parse_devcontainer_json(path)
-
-    def test_devcontainer_cli_used_when_available(self):
-        config = {"customizations": {"dev-code": []}}
-        mock_result = MagicMock(returncode=0, stdout=json.dumps(config))
-        with patch("shutil.which", side_effect=lambda x: "/usr/bin/devcontainer" if x == "devcontainer" else None):
-            with patch("subprocess.run", return_value=mock_result):
-                data, cli_used = devcode.parse_devcontainer_json("/fake/devcontainer.json")
-        self.assertTrue(cli_used)
-        self.assertIn("customizations", data)
-
-    def test_jq_used_when_devcontainer_unavailable(self):
-        config = {"name": "test"}
-        mock_result = MagicMock(returncode=0, stdout=json.dumps(config))
-        with patch("shutil.which", side_effect=lambda x: "/usr/bin/jq" if x == "jq" else None):
-            with patch("subprocess.run", return_value=mock_result):
-                path = self._write_json('{"name": "test"}')
-                data, cli_used = devcode.parse_devcontainer_json(path)
-        self.assertFalse(cli_used)
-        self.assertEqual(data["name"], "test")
+    def test_cwd_defaults_to_none(self):
+        raw = {"configuration": {}, "workspace": {}}
+        mock_result = MagicMock(returncode=0, stdout=json.dumps(raw))
+        with patch("subprocess.run", return_value=mock_result) as mock_run:
+            devcode.parse_devcontainer_json("/fake/devcontainer.json")
+        self.assertIsNone(mock_run.call_args.kwargs["cwd"])
 
 
 class TestWaitForContainer(unittest.TestCase):
@@ -214,34 +197,66 @@ class TestCmdOpen(unittest.TestCase):
 
     def test_errors_on_root_path(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # patch abspath to return "/" so the root guard triggers
-            with patch("os.path.abspath", return_value="/"):
+            # patch realpath to return "/" so the root guard triggers
+            with patch("os.path.realpath", return_value="/"):
                 with patch("os.path.exists", return_value=True):
                     with self.assertRaises(SystemExit):
                         devcode._do_open(tmp, "mytemplate", None, 300, False)
 
+    def test_symlink_project_path_resolved(self):
+        """build_devcontainer_uri receives the real path, not the symlink."""
+        launched = []
+        def fake_popen(cmd, **kw):
+            launched.append(cmd)
+            return MagicMock()
+
+        raw = {"configuration": {}, "workspace": {"workspaceFolder": "/real/myproject"}}
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as real_dir:
+            link_dir = real_dir + "_link"
+            os.symlink(real_dir, link_dir)
+            try:
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
+                            with patch.object(devcode, "resolve_template", return_value="/fake/devcontainer.json"):
+                                with patch.object(devcode, "_git_repo_root", return_value=None):
+                                    result = runner.invoke(devcode.cli, ["open", link_dir, "mytemplate"])
+            finally:
+                os.unlink(link_dir)
+        self.assertEqual(result.exit_code, 0)
+        # The URI hex-encodes hostPath — decode it and verify real path, not symlink
+        uri = launched[0][2]
+        hex_part = uri.split("vscode-remote://dev-container+")[1].split("/")[0]
+        decoded = bytes.fromhex(hex_part).decode("utf-8")
+        self.assertIn(real_dir, decoded)
+        self.assertNotIn(link_dir, decoded)
+
     def test_uses_explicit_template(self):
+        raw = {"configuration": {}, "workspace": {}}
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(devcode, "resolve_template", return_value="/fake/devcontainer.json") as mock_rt:
                 with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("shutil.which", return_value="/usr/bin/code"):
-                        with patch("subprocess.Popen"):
-                            with patch.object(devcode, "run_post_launch"):
+                    with patch("subprocess.Popen"):
+                        with patch.object(devcode, "run_post_launch"):
+                            with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                                 devcode._do_open(tmp, "mytemplate", None, 300, False)
             mock_rt.assert_called_once_with("mytemplate")
 
     def test_auto_detects_from_container(self):
+        raw = {"configuration": {}, "workspace": {}}
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(devcode, "_find_container_config_for_project",
                                return_value="/found/devcontainer.json") as mock_find:
                 with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("shutil.which", return_value="/usr/bin/code"):
-                        with patch("subprocess.Popen"):
-                            with patch.object(devcode, "run_post_launch"):
+                    with patch("subprocess.Popen"):
+                        with patch.object(devcode, "run_post_launch"):
+                            with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                                 devcode._do_open(tmp, None, None, 300, False)
             mock_find.assert_called_once()
 
     def test_auto_detects_falls_back_to_default_template(self):
+        raw = {"configuration": {}, "workspace": {}}
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(devcode, "_find_container_config_for_project", return_value=None):
                 with patch.object(devcode, "_load_settings",
@@ -249,9 +264,9 @@ class TestCmdOpen(unittest.TestCase):
                     with patch.object(devcode, "resolve_template",
                                        return_value="/fake/devcontainer.json") as mock_rt:
                         with patch.object(devcode, "_git_repo_root", return_value=None):
-                            with patch("shutil.which", return_value="/usr/bin/code"):
-                                with patch("subprocess.Popen"):
-                                    with patch.object(devcode, "run_post_launch"):
+                            with patch("subprocess.Popen"):
+                                with patch.object(devcode, "run_post_launch"):
+                                    with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                                         devcode._do_open(tmp, None, None, 300, False)
                 mock_rt.assert_called_once_with("dev-code")
 
@@ -701,7 +716,7 @@ class TestMain(unittest.TestCase):
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value=None):
-                with patch("shutil.which", return_value=None):
+                with patch("shutil.which", side_effect=lambda x: None if x == "code" else "/usr/bin/devcontainer"):
                     result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
         self.assertNotEqual(result.exit_code, 0)
 
@@ -711,12 +726,13 @@ class TestMain(unittest.TestCase):
             launched.append(cmd)
             return MagicMock()
 
+        raw = {"configuration": {}, "workspace": {}}
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("subprocess.Popen", side_effect=fake_popen):
-                        with patch.object(devcode, "run_post_launch"):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                             result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
 
         self.assertEqual(result.exit_code, 0)
@@ -726,21 +742,95 @@ class TestMain(unittest.TestCase):
         self.assertIn("vscode-remote://dev-container+", launched[0][2])
 
     def test_default_container_folder(self):
+        """When no --container-folder, uses workspace.workspaceFolder from CLI output."""
         launched = []
         def fake_popen(cmd, **kw):
             launched.append(cmd)
             return MagicMock()
 
+        raw = {
+            "configuration": {},
+            "workspace": {"workspaceFolder": "/workspaces/myproject"}
+        }
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("subprocess.Popen", side_effect=fake_popen):
-                        with patch.object(devcode, "run_post_launch"):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                             result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("/workspaces/myproject", launched[0][2])
+
+    def test_container_folder_from_workspace(self):
+        """container_folder is taken from workspace.workspaceFolder when not explicitly set."""
+        launched = []
+        def fake_popen(cmd, **kw):
+            launched.append(cmd)
+            return MagicMock()
+
+        raw = {
+            "configuration": {},
+            "workspace": {"workspaceFolder": "/app/myproject"}
+        }
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
+                            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("/app/myproject", launched[0][2])
+
+    def test_container_folder_empty_when_workspace_absent(self):
+        """container_folder is empty string when workspace.workspaceFolder not in CLI output."""
+        launched = []
+        def fake_popen(cmd, **kw):
+            launched.append(cmd)
+            return MagicMock()
+
+        raw = {"configuration": {}, "workspace": {}}
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
+                            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
+
+        self.assertEqual(result.exit_code, 0)
+        # URI ends after the hex blob — no path suffix
+        uri = launched[0][2]
+        self.assertTrue(uri.startswith("vscode-remote://dev-container+"))
+
+    def test_explicit_container_folder_overrides_workspace(self):
+        """--container-folder flag takes precedence over workspace.workspaceFolder."""
+        launched = []
+        def fake_popen(cmd, **kw):
+            launched.append(cmd)
+            return MagicMock()
+
+        raw = {
+            "configuration": {},
+            "workspace": {"workspaceFolder": "/app/myproject"}
+        }
+        runner = CliRunner()
+        with patch("os.path.exists", return_value=True):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
+                            result = runner.invoke(
+                                devcode.cli,
+                                ["open", "/myproject", "claude", "--container-folder", "/override"]
+                            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("/override", launched[0][2])
+        self.assertNotIn("/app/myproject", launched[0][2])
 
     def test_custom_container_folder(self):
         launched = []
@@ -750,14 +840,13 @@ class TestMain(unittest.TestCase):
 
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("subprocess.Popen", side_effect=fake_popen):
-                        with patch.object(devcode, "run_post_launch"):
-                            result = runner.invoke(
-                                devcode.cli,
-                                ["open", "/myproject", "claude", "--container-folder", "/workspace/custom"]
-                            )
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", side_effect=fake_popen):
+                    with patch.object(devcode, "run_post_launch"):
+                        result = runner.invoke(
+                            devcode.cli,
+                            ["open", "/myproject", "claude", "--container-folder", "/workspace/custom"]
+                        )
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn("/workspace/custom", launched[0][2])
@@ -767,12 +856,13 @@ class TestMain(unittest.TestCase):
         def fake_rpl(config_file, project_path, timeout):
             captured["timeout"] = timeout
 
+        raw = {"configuration": {}, "workspace": {}}
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("subprocess.Popen", return_value=MagicMock()):
-                        with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", return_value=MagicMock()):
+                    with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                             result = runner.invoke(
                                 devcode.cli,
                                 ["open", "/myproject", "claude", "--timeout", "42"]
@@ -786,12 +876,13 @@ class TestMain(unittest.TestCase):
         def fake_rpl(config_file, project_path, timeout):
             captured["timeout"] = timeout
 
+        raw = {"configuration": {}, "workspace": {}}
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
-            with patch("shutil.which", return_value="/usr/bin/code"):
-                with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("subprocess.Popen", return_value=MagicMock()):
-                        with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+            with patch.object(devcode, "_git_repo_root", return_value=None):
+                with patch("subprocess.Popen", return_value=MagicMock()):
+                    with patch.object(devcode, "run_post_launch", side_effect=fake_rpl):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                             result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
 
         self.assertEqual(result.exit_code, 0)
@@ -826,23 +917,25 @@ class TestGitSubdirGuard(unittest.TestCase):
 
     def test_project_is_git_root_does_not_exit(self):
         """Guard does not fire when project_path IS the git root."""
+        raw = {"configuration": {}, "workspace": {}}
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value="/repo"):
-                with patch("shutil.which", return_value="/usr/bin/code"):
-                    with patch("subprocess.Popen", return_value=MagicMock()):
-                        with patch.object(devcode, "run_post_launch"):
+                with patch("subprocess.Popen", return_value=MagicMock()):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                             result = runner.invoke(devcode.cli, ["open", "/repo", "claude"])
         self.assertEqual(result.exit_code, 0)
 
     def test_not_in_git_repo_does_not_exit(self):
         """Guard does not fire when _git_repo_root returns None."""
+        raw = {"configuration": {}, "workspace": {}}
         runner = CliRunner()
         with patch("os.path.exists", return_value=True):
             with patch.object(devcode, "_git_repo_root", return_value=None):
-                with patch("shutil.which", return_value="/usr/bin/code"):
-                    with patch("subprocess.Popen", return_value=MagicMock()):
-                        with patch.object(devcode, "run_post_launch"):
+                with patch("subprocess.Popen", return_value=MagicMock()):
+                    with patch.object(devcode, "run_post_launch"):
+                        with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
                             result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
         self.assertEqual(result.exit_code, 0)
 
@@ -878,11 +971,11 @@ class TestRunPostLaunch(unittest.TestCase):
         return {"customizations": {"dev-code": {"cp": entries}}}
 
     def _run(self, entries, env=None, source_exists=True, container_id="cid123",
-             target_exists=False, cli_used=False, extra_patches=None):
+             target_exists=False, extra_patches=None):
         """Helper: run run_post_launch with mocked dependencies."""
         config = self._make_config(entries)
         patches = {
-            "parse_devcontainer_json": MagicMock(return_value=(config, cli_used)),
+            "parse_devcontainer_json": MagicMock(return_value={"configuration": config}),
             "wait_for_container": MagicMock(return_value=container_id),
         }
         if extra_patches:
@@ -915,7 +1008,7 @@ class TestRunPostLaunch(unittest.TestCase):
     def test_absent_key_skips_docker(self):
         config = {"customizations": {}}
         with patch.object(devcode, "parse_devcontainer_json",
-                          return_value=(config, False)):
+                          return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container") as mock_wait:
                 devcode.run_post_launch("/fake.json", "/proj", 300)
         mock_wait.assert_not_called()
@@ -924,7 +1017,7 @@ class TestRunPostLaunch(unittest.TestCase):
         # dev-code key present but null — not a dict, skip silently
         config = {"customizations": {"dev-code": None}}
         with patch.object(devcode, "parse_devcontainer_json",
-                          return_value=(config, False)):
+                          return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container") as mock_wait:
                 devcode.run_post_launch("/fake.json", "/proj", 300)
         mock_wait.assert_not_called()
@@ -933,7 +1026,7 @@ class TestRunPostLaunch(unittest.TestCase):
         # dev-code key exists but is not a dict (e.g. old flat-list format)
         config = {"customizations": {"dev-code": "bad"}}
         with patch.object(devcode, "parse_devcontainer_json",
-                          return_value=(config, False)):
+                          return_value={"configuration": config}):
             with self.assertRaises(SystemExit):
                 devcode.run_post_launch("/fake.json", "/proj", 300)
 
@@ -941,7 +1034,7 @@ class TestRunPostLaunch(unittest.TestCase):
         # dev-code is a dict but has no cp key — silent no-op
         config = {"customizations": {"dev-code": {}}}
         with patch.object(devcode, "parse_devcontainer_json",
-                          return_value=(config, False)):
+                          return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container") as mock_wait:
                 devcode.run_post_launch("/fake.json", "/proj", 300)
         mock_wait.assert_not_called()
@@ -950,7 +1043,7 @@ class TestRunPostLaunch(unittest.TestCase):
         # cp key exists but is not a list
         config = {"customizations": {"dev-code": {"cp": "oops"}}}
         with patch.object(devcode, "parse_devcontainer_json",
-                          return_value=(config, False)):
+                          return_value={"configuration": config}):
             with self.assertRaises(SystemExit):
                 devcode.run_post_launch("/fake.json", "/proj", 300)
 
@@ -1005,7 +1098,7 @@ class TestRunPostLaunch(unittest.TestCase):
         entries = [{"source": "/src/dotfiles/.", "target": "/home/user/", "bad_key": "x", "override": True}]
         config = self._make_config(entries)
         children = ["/src/dotfiles/.bashrc", "/src/dotfiles/.zshrc"]
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                     with patch("os.path.exists", return_value=True):
@@ -1045,14 +1138,25 @@ class TestRunPostLaunch(unittest.TestCase):
         # source should be resolved before reaching docker cp
         self.assertEqual(len(cp_calls), 1)
 
-    def test_env_var_missing_warns_and_skips(self):
-        entries = [{"source": "${localEnv:MISSING_VAR}/.claude", "target": "/tgt"}]
+    def test_env_var_unset_skips_entry(self):
+        # Env var substitution is always applied. If the var is unset, the entry is skipped.
+        entries = [{"source": "${localEnv:MISSING_VAR}/.claude", "target": "/tgt", "override": True}]
         env = {k: v for k, v in os.environ.items() if k != "MISSING_VAR"}
         with patch.dict(os.environ, env, clear=True):
-            with self.assertLogs("devcode", level="WARNING"):
+            with self.assertLogs("devcode", level="WARNING") as cm:
                 calls = self._run(entries)
         cp_calls = [c for c in calls if "cp" in c]
-        self.assertEqual(cp_calls, [])
+        self.assertEqual(len(cp_calls), 0)
+        self.assertTrue(any("env var unset" in line for line in cm.output))
+
+    def test_env_var_always_substituted(self):
+        entries = [{"source": "${localEnv:HOME}/.ssh/id_rsa", "target": "/root/.ssh/id_rsa"}]
+        with patch.dict(os.environ, {"HOME": "/home/testuser"}):
+            calls = self._run(entries)
+        # docker cp source should be the resolved path, not the raw ${localEnv:HOME} string
+        cp_call = next((c for c in calls if "cp" in c), None)
+        self.assertIsNotNone(cp_call)
+        self.assertTrue(any("/home/testuser" in str(arg) for arg in cp_call))
 
     def test_source_not_found_warns_and_skips(self):
         entries = [{"source": "/nonexistent", "target": "/tgt", "override": True}]
@@ -1071,7 +1175,7 @@ class TestRunPostLaunch(unittest.TestCase):
             return MagicMock(returncode=0)
         with tempfile.TemporaryDirectory() as config_dir:
             config_file = os.path.join(config_dir, "devcontainer.json")
-            with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
                 with patch.object(devcode, "wait_for_container", return_value="cid"):
                     with patch("subprocess.run", side_effect=fake_run):
                         with patch("os.path.exists", return_value=True):
@@ -1089,7 +1193,7 @@ class TestRunPostLaunch(unittest.TestCase):
         entries = [{"source": "/absolute/path/file.json", "target": "/tgt", "override": True}]
         config = self._make_config(entries)
 
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", return_value=MagicMock(returncode=1)):
                     with patch("os.path.exists", return_value=False):
@@ -1110,7 +1214,7 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
@@ -1130,7 +1234,7 @@ class TestRunPostLaunch(unittest.TestCase):
             if "mkdir" in cmd:
                 mkdir_args.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
@@ -1154,7 +1258,7 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
@@ -1178,7 +1282,7 @@ class TestRunPostLaunch(unittest.TestCase):
         children = ["/src/dotfiles/.bashrc", "/src/dotfiles/.gitconfig"]
         def isdir_side_effect(path):
             return path == "/src/dotfiles"
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
@@ -1210,7 +1314,7 @@ class TestRunPostLaunch(unittest.TestCase):
             ]
             def isdir_side_effect(path):
                 return os.path.normcase(path) == os.path.normcase(dotfiles_dir)
-            with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+            with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
                 with patch.object(devcode, "wait_for_container", return_value="cid"):
                     with patch("subprocess.run", side_effect=fake_run):
                         with patch("os.path.exists", return_value=True):
@@ -1228,7 +1332,7 @@ class TestRunPostLaunch(unittest.TestCase):
         """source/. with target not ending in / produces a warning."""
         entries = [{"source": "/src/dotfiles/.", "target": "/home/user", "override": True}]
         config = self._make_config(entries)
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", return_value=MagicMock(returncode=0)):
                     with patch("os.path.exists", return_value=True):
@@ -1246,7 +1350,7 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 cp_calls.append(cmd)
             return MagicMock(returncode=0)
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
@@ -1264,7 +1368,7 @@ class TestRunPostLaunch(unittest.TestCase):
             if len(cmd) > 1 and cmd[0] == "docker" and cmd[1] == "cp":
                 return MagicMock(returncode=1)  # cp fails
             return MagicMock(returncode=0)
-        with patch.object(devcode, "parse_devcontainer_json", return_value=(config, False)):
+        with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
             with patch.object(devcode, "wait_for_container", return_value="cid"):
                 with patch("subprocess.run", side_effect=fake_run):
                     with patch("os.path.exists", return_value=True):
@@ -1296,9 +1400,19 @@ class TestCmdList(unittest.TestCase):
     def _run_list(self, search_path, long=False):
         lines = []
         dirs = [d for d in search_path.split(os.pathsep) if d]
+
+        def fake_parse(config_file):
+            try:
+                with open(config_file) as f:
+                    cfg = json.load(f)
+            except Exception:
+                raise SystemExit(1)
+            return {"configuration": cfg}
+
         with patch.object(devcode, "_load_settings", return_value={"template_sources": dirs}):
-            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.list_command.callback(long=long)
+            with patch.object(devcode, "parse_devcontainer_json", side_effect=fake_parse):
+                with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                    devcode.list_command.callback(long=long)
         return lines
 
     def test_short_lists_user_templates(self):
@@ -1692,7 +1806,7 @@ class TestCmdPs(unittest.TestCase):
             with patch("builtins.input", return_value="1"):
                 with patch("devcode._do_open") as mock_open:
                     devcode.ps_command.callback(show_all=False, interactive=True)
-        self.assertEqual(mock_open.call_args.kwargs["container_folder"], "/workspaces/myapp")
+        self.assertIsNone(mock_open.call_args.kwargs["container_folder"])
 
     def test_interactive_invalid_selection_exits(self):
         rows = [
@@ -1802,12 +1916,20 @@ class TestCmdOpenDryRun(unittest.TestCase):
             json.dump(data, f)
 
     def _run_dry_run(self, user_dir, template, projectpath, container_folder=None):
+        import json as _json
         lines = []
+        config_path = os.path.join(user_dir, template, ".devcontainer", "devcontainer.json")
+        try:
+            with open(config_path) as f:
+                config = _json.load(f)
+        except (OSError, ValueError):
+            config = {}
         with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
             with patch("os.path.exists", return_value=True):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
-                    with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                        devcode._do_open(projectpath, template, container_folder, 300, True)
+                    with patch.object(devcode, "parse_devcontainer_json", return_value={"configuration": config}):
+                        with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                            devcode._do_open(projectpath, template, container_folder, 300, True)
         return lines
 
     def test_prints_config_and_uri(self):
@@ -1863,9 +1985,11 @@ class TestCmdOpenDryRun(unittest.TestCase):
                 with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
                     with patch("os.path.exists", return_value=True):
                         with patch.object(devcode, "_git_repo_root", return_value=None):
-                            lines = []
-                            with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                                devcode._do_open("/myproject", "mytemplate", None, 300, True)
+                                lines = []
+                                raw = {"configuration": {"customizations": {"dev-code": {"cp": [{"source": "${localEnv:NONEXISTENT_VAR_XYZ}", "target": "/home/vscode/x"}]}}}}
+                                with patch.object(devcode, "parse_devcontainer_json", return_value=raw):
+                                    with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
+                                        devcode._do_open("/myproject", "mytemplate", None, 300, True)
         combined = "\n".join(lines)
         self.assertIn("<unset:", combined)
 
@@ -1959,9 +2083,11 @@ class TestClickCLI(unittest.TestCase):
             with patch.object(devcode, "_load_settings",
                                return_value={"template_sources": [os.path.abspath(".")]}):
                 with patch.object(devcode, "_git_repo_root", return_value=None):
-                    result = runner.invoke(
-                        devcode.cli, ["open", project, "mytemplate", "--dry-run"]
-                    )
+                    with patch.object(devcode, "parse_devcontainer_json",
+                                      return_value={"configuration": {"name": "test"}}):
+                        result = runner.invoke(
+                            devcode.cli, ["open", project, "mytemplate", "--dry-run"]
+                        )
         self.assertEqual(result.exit_code, 0)
 
     def test_list_command(self):
@@ -2004,3 +2130,27 @@ class TestCompleteTemplates(unittest.TestCase):
         with patch.object(devcode, "_list_template_names", return_value=["alpha", "beta"]):
             result = devcode._complete_templates(None, None, "z")
         self.assertEqual(result, [])
+
+
+class TestConftest(unittest.TestCase):
+    def test_devcontainer_on_path_by_default(self):
+        import shutil
+        self.assertIsNotNone(shutil.which("devcontainer"))
+
+    def test_code_on_path_by_default(self):
+        import shutil
+        self.assertIsNotNone(shutil.which("code"))
+
+
+class TestStartupCheck(unittest.TestCase):
+    def test_exits_if_devcontainer_not_on_path(self):
+        runner = CliRunner()
+        with patch("shutil.which", side_effect=lambda x: None if x == "devcontainer" else "/usr/bin/code"):
+            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
+        self.assertEqual(result.exit_code, 1)
+
+    def test_error_message_when_devcontainer_missing(self):
+        runner = CliRunner()
+        with patch("shutil.which", side_effect=lambda x: None if x == "devcontainer" else "/usr/bin/code"):
+            result = runner.invoke(devcode.cli, ["open", "/myproject", "claude"])
+        self.assertIn("devcontainer CLI not found on PATH", result.stderr)

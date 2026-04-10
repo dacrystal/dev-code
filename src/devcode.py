@@ -264,51 +264,17 @@ def build_devcontainer_uri(host_path: str, config_file: str, container_folder: s
 
 
 
-def parse_devcontainer_json(config_file: str):
-    """Parse devcontainer.json. Returns (dict, cli_used: bool).
-
-    Tries in order: devcontainer CLI, jq, Python json+re fallback.
-    """
-    # Strategy 1: devcontainer CLI (resolves ${localEnv:VAR} automatically)
-    if shutil.which("devcontainer"):
-        result = subprocess.run(
-            ["devcontainer", "read-configuration", "--config", config_file],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            try:
-                data = json.loads(result.stdout)
-                # read-configuration wraps output; extract .configuration if present
-                return data.get("configuration", data), True
-            except json.JSONDecodeError:
-                pass
-
-    # Strategy 2: jq
-    if shutil.which("jq"):
-        result = subprocess.run(
-            ["jq", ".", config_file],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            try:
-                return json.loads(result.stdout), False
-            except json.JSONDecodeError:
-                pass
-
-    # Strategy 3: Python json + re fallback
-    with open(config_file) as f:
-        content = f.read()
-
-    # Strip full-line // comments (re.MULTILINE makes ^ match start of each line)
-    content = re.sub(r"^\s*//[^\n]*\n?", "", content, flags=re.MULTILINE)
-    # Strip trailing commas before } or ]
-    content = re.sub(r",(\s*[}\]])", r"\1", content)
-
-    try:
-        return json.loads(content), False
-    except json.JSONDecodeError as e:
-        logger.error("failed to parse %s: %s", config_file, e)
+def parse_devcontainer_json(config_file: str, cwd: str | None = None) -> dict:
+    """Run devcontainer read-configuration and return the full raw output dict."""
+    result = subprocess.run(
+        ["devcontainer", "read-configuration", "--config", config_file],
+        capture_output=True, text=True,
+        cwd=cwd,
+    )
+    if result.returncode != 0:
+        logger.error("devcontainer read-configuration failed: %s", result.stderr.strip())
         sys.exit(1)
+    return json.loads(result.stdout)
 
 
 def wait_for_container(config_file: str, project_path: str, timeout: int) -> str:
@@ -391,7 +357,7 @@ def _list_dir_children(source_dir: str) -> list:
     return [os.path.join(source_dir, name) for name in os.listdir(source_dir)]
 
 
-def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, config_dir: str) -> None:
+def _process_entry(container_id: str, entry: dict, idx: int, config_dir: str) -> None:
     """Process a single customizations.dev-code.cp copy entry."""
     for key in entry:
         if key not in KNOWN_CP_FIELDS:
@@ -406,12 +372,11 @@ def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, con
         return
 
     # Step 1: Env var substitution + relative path resolution
-    if not cli_used:
-        resolved = _substitute_env_vars(source)
-        if resolved is None:
-            logger.warning("entry %d source env var unset or empty, skipping", idx)
-            return
-        source = resolved
+    resolved = _substitute_env_vars(source)
+    if resolved is None:
+        logger.warning("entry %d source env var unset or empty, skipping", idx)
+        return
+    source = resolved
 
     source = _expand_source_path(source, config_dir)
 
@@ -432,7 +397,7 @@ def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, con
             child_entry = {k: entry[k] for k in KNOWN_CP_FIELDS if k in entry}
             child_entry["source"] = child_path
             child_entry["target"] = target
-            _process_entry(container_id, child_entry, cli_used=True, idx=idx, config_dir=config_dir)
+            _process_entry(container_id, child_entry, idx=idx, config_dir=config_dir)
         return
 
     # Step 3: Check source exists
@@ -492,9 +457,10 @@ def _process_entry(container_id: str, entry: dict, cli_used: bool, idx: int, con
 
 def run_post_launch(config_file: str, project_path: str, timeout: int) -> None:
     """Parse devcontainer.json and run customizations.dev-code.cp copy entries."""
-    data, cli_used = parse_devcontainer_json(config_file)
+    data = parse_devcontainer_json(config_file, cwd=project_path)
+    config = data.get("configuration", {})
 
-    dev_code_section = data.get("customizations", {}).get("dev-code")
+    dev_code_section = config.get("customizations", {}).get("dev-code")
     if dev_code_section is None:
         return
     if not isinstance(dev_code_section, dict):
@@ -512,7 +478,7 @@ def run_post_launch(config_file: str, project_path: str, timeout: int) -> None:
 
     config_dir = os.path.dirname(os.path.abspath(config_file))
     for idx, entry in enumerate(entries):
-        _process_entry(container_id, entry, cli_used, idx, config_dir)
+        _process_entry(container_id, entry, idx, config_dir)
 
 
 def _git_repo_root(path: str) -> str | None:
@@ -564,7 +530,7 @@ def _find_container_config_for_project(project_path: str) -> str | None:
 
 def _do_open(projectpath: str, template, container_folder, timeout: int, dry_run: bool) -> None:
     """Core open logic shared by the open command and internal callers."""
-    project_path = os.path.abspath(projectpath)
+    project_path = os.path.realpath(projectpath)
 
     if not os.path.exists(project_path):
         logger.error("projectpath not found: %s", projectpath)
@@ -599,7 +565,9 @@ def _do_open(projectpath: str, template, container_folder, timeout: int, dry_run
                 sys.exit(1)
             config_file = resolve_template(default)
 
-    container_folder = container_folder or f"/workspaces/{os.path.basename(project_path)}"
+    if not container_folder:
+        data = parse_devcontainer_json(config_file, cwd=project_path)
+        container_folder = data.get("workspace", {}).get("workspaceFolder", "")
     uri = build_devcontainer_uri(project_path, config_file, container_folder)
 
     if dry_run:
@@ -619,8 +587,9 @@ def _cmd_open_dry_run(config_file: str, project_path: str, uri: str) -> None:
     print(f"Config:  {config_file}")
     print(f"URI:     {uri}")
 
-    data, cli_used = parse_devcontainer_json(config_file)
-    dev_code_section = data.get("customizations", {}).get("dev-code")
+    data = parse_devcontainer_json(config_file, cwd=project_path)
+    config = data.get("configuration", {})
+    dev_code_section = config.get("customizations", {}).get("dev-code")
     entries = []
     if isinstance(dev_code_section, dict):
         raw = dev_code_section.get("cp")
@@ -638,15 +607,14 @@ def _cmd_open_dry_run(config_file: str, project_path: str, uri: str) -> None:
         target = entry.get("target", "(no target)")
 
         # Env var substitution
-        if not cli_used:
-            resolved = _substitute_env_vars(source)
-            if resolved is None:
-                unset = [m.group(1) for m in re.finditer(r"\$\{localEnv:([^}]+)\}", source)
-                         if not os.environ.get(m.group(1))]
-                logger.warning("entry %d: env var unset: %s", idx, ", ".join(unset))
-                print(f"  [{idx}] <unset: {unset[0] if unset else '?'}> → {target}")
-                continue
-            source = resolved
+        resolved = _substitute_env_vars(source)
+        if resolved is None:
+            unset = [m.group(1) for m in re.finditer(r"\$\{localEnv:([^}]+)\}", source)
+                     if not os.environ.get(m.group(1))]
+            logger.warning("entry %d: env var unset: %s", idx, ", ".join(unset))
+            print(f"  [{idx}] <unset: {unset[0] if unset else '?'}> → {target}")
+            continue
+        source = resolved
 
         source = _expand_source_path(source, config_dir)
         annotation = " [missing]" if not os.path.exists(source.rstrip("/.")) else ""
@@ -686,6 +654,9 @@ def _complete_templates(ctx, param, incomplete):
 @click.pass_context
 def cli(ctx):
     """project · editor · container — simplified."""
+    if not shutil.which("devcontainer"):
+        click.echo("error: devcontainer CLI not found on PATH", err=True)
+        raise click.exceptions.Exit(1)
     if ctx.invoked_subcommand is None:
         click.echo(BANNER)
         click.echo(ctx.get_help())
@@ -694,7 +665,7 @@ def cli(ctx):
 @cli.command("open")
 @click.argument("projectpath")
 @click.argument("template", required=False, shell_complete=_complete_templates)
-@click.option("--container-folder", default=None, help="Path inside the container.")
+@click.option("--container-folder", default=None, help="Path inside the container. Default: resolved from devcontainer config.")
 @click.option("--timeout", type=int, default=300, show_default=True,
               help="Seconds to wait for devcontainer to start.")
 @click.option("--dry-run", is_flag=True, help="Print plan without executing.")
@@ -785,8 +756,8 @@ def list_command(long):
         config_file = os.path.join(template_root, ".devcontainer", "devcontainer.json")
         desc = ""
         try:
-            data, _ = parse_devcontainer_json(config_file)
-            desc = data.get("name", "")
+            data = parse_devcontainer_json(config_file)
+            desc = data.get("configuration", {}).get("name", "")
         except (SystemExit, Exception):
             # parse_devcontainer_json calls sys.exit(1) on bad JSON (raises SystemExit,
             # not Exception); catch both so a malformed template doesn't abort the listing.
@@ -891,13 +862,10 @@ def ps_command(show_all, interactive):
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    if not container_folder:
-        container_folder = f"/workspaces/{os.path.basename(local_folder)}"
-
     _do_open(
         projectpath=projectpath,
         template=config_file,
-        container_folder=container_folder,
+        container_folder=container_folder if container_folder else None,
         timeout=300,
         dry_run=False,
     )
