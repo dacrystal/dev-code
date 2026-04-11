@@ -1,3 +1,18 @@
+## [0.3.0] - 2026-04-11
+
+### Added
+
+- Make devcontainer CLI a hard requirement
+- CLI v2 restructure — template group, source subcommands, prune, list replaces ps
+- *(template)* Write-target policy — --path flag, template_write_dir setting, XDG default
+
+### Fixed
+
+- Shell completion, banner in --help, completion subcommand, settings init
+- *(tests)* Use realpath for temp paths to fix macOS/Windows CI failures
+- *(tests)* Use platform-safe paths to fix Windows CI failures
+- *(tests)* Escape backslashes when asserting in raw JSON string on Windows
+
 ## [0.2.0] - 2026-04-07
 
 ### Added
