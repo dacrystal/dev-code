@@ -335,6 +335,31 @@ class TestLoadSettings(unittest.TestCase):
         self.assertEqual(settings["default_template"], "dev-code")
 
 
+class TestSaveSettings(unittest.TestCase):
+    def test_writes_json_to_settings_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(devcode, "_conf_dir", return_value=tmpdir):
+                devcode._save_settings({"foo": "bar"})
+            path = os.path.join(tmpdir, "settings.json")
+            self.assertTrue(os.path.exists(path))
+            with open(path) as f:
+                data = json.load(f)
+            self.assertEqual(data, {"foo": "bar"})
+
+    def test_creates_conf_dir_if_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = os.path.join(tmpdir, "deep", "dir")
+            with patch.object(devcode, "_conf_dir", return_value=nested):
+                devcode._save_settings({})
+            self.assertTrue(os.path.exists(os.path.join(nested, "settings.json")))
+
+    def test_exits_on_write_failure(self):
+        with patch.object(devcode, "_conf_dir", return_value="/no/such/path"):
+            with patch("os.makedirs", side_effect=OSError("denied")):
+                with self.assertRaises(SystemExit):
+                    devcode._save_settings({"x": 1})
+
+
 class TestResolveTemplateSearchPath(unittest.TestCase):
     def test_uses_template_sources_from_settings(self):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "/b"]}):
@@ -1412,7 +1437,7 @@ class TestCmdList(unittest.TestCase):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": dirs}):
             with patch.object(devcode, "parse_devcontainer_json", side_effect=fake_parse):
                 with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                    devcode.list_command.callback(long=long)
+                    devcode.template_list_command.callback(long=long)
         return lines
 
     def test_short_lists_user_templates(self):
@@ -1540,6 +1565,192 @@ class TestCmdList(unittest.TestCase):
         self.assertEqual(len(lines), 2)
 
 
+class TestCmdTemplateDefault(unittest.TestCase):
+    def test_no_arg_prints_current_default(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"default_template": "my-tpl"}):
+            result = runner.invoke(devcode.cli, ["template", "default"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("my-tpl", result.output)
+
+    def test_no_arg_empty_default_prints_nothing(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"default_template": ""}):
+            result = runner.invoke(devcode.cli, ["template", "default"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), "")
+
+    def test_with_arg_sets_default(self):
+        runner = CliRunner()
+        saved = {}
+        def fake_save(s):
+            saved.update(s)
+        with patch.object(devcode, "_load_settings", return_value={"default_template": ""}):
+            with patch.object(devcode, "_save_settings", side_effect=fake_save):
+                result = runner.invoke(devcode.cli, ["template", "default", "my-tpl"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(saved.get("default_template"), "my-tpl")
+
+    def test_with_arg_prints_confirmation(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"default_template": ""}):
+            with patch.object(devcode, "_save_settings"):
+                result = runner.invoke(devcode.cli, ["template", "default", "my-tpl"])
+        self.assertIn("my-tpl", result.output)
+
+
+class TestCmdTemplateSource(unittest.TestCase):
+    def test_source_list_prints_paths(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "/b"]}):
+            result = runner.invoke(devcode.cli, ["template", "source", "list"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("/a", result.output)
+        self.assertIn("/b", result.output)
+
+    def test_source_list_empty_shows_nothing(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": []}):
+            result = runner.invoke(devcode.cli, ["template", "source", "list"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), "")
+
+    def test_source_add_appends_path(self):
+        runner = CliRunner()
+        saved = {}
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a"]}):
+            with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
+                result = runner.invoke(devcode.cli, ["template", "source", "add", "/b"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("/b", saved.get("template_sources", []))
+        self.assertIn("/a", saved.get("template_sources", []))
+
+    def test_source_add_expands_tilde(self):
+        runner = CliRunner()
+        saved = {}
+        home = os.path.expanduser("~")
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": []}):
+            with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
+                result = runner.invoke(devcode.cli, ["template", "source", "add", "~/mytemplates"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn(os.path.join(home, "mytemplates"), saved.get("template_sources", []))
+
+    def test_source_add_idempotent(self):
+        """Adding an already-present path does not duplicate it."""
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a"]}):
+            with patch.object(devcode, "_save_settings") as mock_save:
+                result = runner.invoke(devcode.cli, ["template", "source", "add", "/a"])
+        self.assertEqual(result.exit_code, 0)
+        # _save_settings should not be called when path is already present
+        mock_save.assert_not_called()
+
+    def test_source_remove_removes_path(self):
+        runner = CliRunner()
+        saved = {}
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "/b"]}):
+            with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
+                result = runner.invoke(devcode.cli, ["template", "source", "remove", "/a"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertNotIn("/a", saved.get("template_sources", []))
+        self.assertIn("/b", saved.get("template_sources", []))
+
+    def test_source_remove_exits_if_not_found(self):
+        runner = CliRunner()
+        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a"]}):
+            result = runner.invoke(devcode.cli, ["template", "source", "remove", "/no-such"])
+        self.assertNotEqual(result.exit_code, 0)
+
+
+class TestCmdPrune(unittest.TestCase):
+    def _stopped_row(self, created, cid, folder, config="/some/config"):
+        return f"{created}\t{cid}\t{folder}\t{config}\tExited (0) 2 hours ago"
+
+    def _running_row(self, created, cid, folder, config="/some/config"):
+        return f"{created}\t{cid}\t{folder}\t{config}\tUp 2 hours"
+
+    def test_no_path_and_no_all_projects_exits(self):
+        runner = CliRunner()
+        result = runner.invoke(devcode.cli, ["prune"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--all-projects", result.output + (result.stderr or ""))
+
+    def test_no_stopped_containers_message(self):
+        runner = CliRunner()
+        mock_result = MagicMock(returncode=0, stdout="")
+        with patch("subprocess.run", return_value=mock_result):
+            result = runner.invoke(devcode.cli, ["prune", "--all-projects"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("no stopped containers", result.output)
+
+    def test_running_containers_not_pruned(self):
+        runner = CliRunner()
+        row = self._running_row("2026-01-01 10:00:00 +0000 UTC", "abc123", "/home/user/app")
+        mock_result = MagicMock(returncode=0, stdout=row + "\n")
+        with patch("subprocess.run", return_value=mock_result):
+            result = runner.invoke(devcode.cli, ["prune", "--all-projects"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("no stopped containers", result.output)
+
+    def test_keeps_most_recent_by_default(self):
+        """With two stopped containers, the more recent one is kept."""
+        runner = CliRunner()
+        row_old = self._stopped_row("2026-01-01 10:00:00 +0000 UTC", "old111", "/home/user/app")
+        row_new = self._stopped_row("2026-01-02 10:00:00 +0000 UTC", "new222", "/home/user/app")
+        mock_list = MagicMock(returncode=0, stdout=row_old + "\n" + row_new + "\n")
+        mock_rm = MagicMock(returncode=0, stdout="")
+        removed = []
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "docker" and cmd[1] == "rm":
+                removed.append(cmd[2])
+                return mock_rm
+            return mock_list
+        with patch("subprocess.run", side_effect=fake_run):
+            result = runner.invoke(devcode.cli, ["prune", "--all-projects"], input="y\n")
+        self.assertIn("old111", removed)
+        self.assertNotIn("new222", removed)
+
+    def test_include_recent_prunes_all(self):
+        runner = CliRunner()
+        row_old = self._stopped_row("2026-01-01 10:00:00 +0000 UTC", "old111", "/home/user/app")
+        row_new = self._stopped_row("2026-01-02 10:00:00 +0000 UTC", "new222", "/home/user/app")
+        mock_list = MagicMock(returncode=0, stdout=row_old + "\n" + row_new + "\n")
+        mock_rm = MagicMock(returncode=0, stdout="")
+        removed = []
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "docker" and cmd[1] == "rm":
+                removed.append(cmd[2])
+                return mock_rm
+            return mock_list
+        with patch("subprocess.run", side_effect=fake_run):
+            result = runner.invoke(devcode.cli, ["prune", "--all-projects", "--include-recent"], input="y\n")
+        self.assertIn("old111", removed)
+        self.assertIn("new222", removed)
+
+    def test_user_declines_confirmation(self):
+        runner = CliRunner()
+        row_old = self._stopped_row("2026-01-01 10:00:00 +0000 UTC", "old111", "/home/user/app")
+        row_new = self._stopped_row("2026-01-02 10:00:00 +0000 UTC", "new222", "/home/user/app")
+        mock_list = MagicMock(returncode=0, stdout=row_old + "\n" + row_new + "\n")
+        removed = []
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "docker" and cmd[1] == "rm":
+                removed.append(cmd[2])
+            return mock_list
+        with patch("subprocess.run", side_effect=fake_run):
+            result = runner.invoke(devcode.cli, ["prune", "--all-projects"], input="N\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(removed, [])
+        self.assertIn("aborted", result.output)
+
+    def test_docker_failure_exits(self):
+        runner = CliRunner()
+        mock_result = MagicMock(returncode=1, stdout="")
+        with patch("subprocess.run", return_value=mock_result):
+            result = runner.invoke(devcode.cli, ["prune", "--all-projects"])
+        self.assertNotEqual(result.exit_code, 0)
+
+
 class TestCmdNew(unittest.TestCase):
     def _setup_pkg(self, pkg_dir):
         """Create a fake dev-code built-in in pkg_dir."""
@@ -1650,7 +1861,7 @@ class TestCmdEdit(unittest.TestCase):
     def test_no_arg_is_missing_argument_error(self):
         """edit requires a template argument; omitting it should exit non-zero."""
         runner = CliRunner()
-        result = runner.invoke(devcode.cli, ["edit"])
+        result = runner.invoke(devcode.cli, ["template", "edit"])
         self.assertNotEqual(result.exit_code, 0)
 
     def test_does_not_call_do_open(self):
@@ -1688,7 +1899,7 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=False, interactive=False)
+                devcode.list_command.callback(show_all=False, interactive=False)
         combined = "\n".join(lines)
         self.assertIn("claude", combined)
         self.assertIn("abc123def456", combined)
@@ -1700,14 +1911,14 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=False, interactive=False)
+                devcode.list_command.callback(show_all=False, interactive=False)
         self.assertTrue(any("no running devcontainers" in str(l) for l in lines))
 
     def test_docker_unavailable_exits(self):
         mock_result = MagicMock(returncode=1, stdout="")
         with patch("subprocess.run", return_value=mock_result):
             with self.assertRaises(SystemExit):
-                devcode.ps_command.callback(show_all=False, interactive=False)
+                devcode.list_command.callback(show_all=False, interactive=False)
 
     def test_malformed_row_skipped(self):
         # A row with fewer than 4 fields after dropping CreatedAt should be skipped silently
@@ -1718,7 +1929,7 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=False, interactive=False)  # must not raise
+                devcode.list_command.callback(show_all=False, interactive=False)  # must not raise
         combined = "\n".join(lines)
         self.assertIn("bbb222", combined)  # good row shown
         self.assertNotIn("abc123", combined)  # malformed row skipped
@@ -1736,7 +1947,7 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=True, interactive=False)
+                devcode.list_command.callback(show_all=True, interactive=False)
         combined = "\n".join(lines)
         self.assertIn("aaa111", combined)   # stopped container included
         self.assertIn("bbb222", combined)   # running container included
@@ -1754,7 +1965,7 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=False, interactive=False)
+                devcode.list_command.callback(show_all=False, interactive=False)
         combined = "\n".join(lines)
         self.assertNotIn("aaa111", combined)   # stopped excluded
         self.assertIn("bbb222", combined)      # running shown
@@ -1764,7 +1975,7 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=True, interactive=False)
+                devcode.list_command.callback(show_all=True, interactive=False)
         self.assertTrue(any("no devcontainers" in str(l) and "running" not in str(l) for l in lines))
 
     def test_interactive_valid_selection_opens_container(self):
@@ -1781,7 +1992,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
                 with patch("devcode._do_open") as mock_open:
-                    devcode.ps_command.callback(show_all=False, interactive=True)
+                    devcode.list_command.callback(show_all=False, interactive=True)
         mock_open.assert_called_once_with(
             projectpath="/home/user/myapp",
             template="/home/user/.local/share/dev-code/templates/python/.devcontainer/devcontainer.json",
@@ -1805,7 +2016,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
                 with patch("devcode._do_open") as mock_open:
-                    devcode.ps_command.callback(show_all=False, interactive=True)
+                    devcode.list_command.callback(show_all=False, interactive=True)
         self.assertIsNone(mock_open.call_args.kwargs["container_folder"])
 
     def test_interactive_invalid_selection_exits(self):
@@ -1818,7 +2029,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", return_value="99"):
                 with self.assertRaises(SystemExit):
-                    devcode.ps_command.callback(show_all=False, interactive=True)
+                    devcode.list_command.callback(show_all=False, interactive=True)
 
     def test_interactive_non_integer_exits(self):
         rows = [
@@ -1830,7 +2041,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", return_value="abc"):
                 with self.assertRaises(SystemExit):
-                    devcode.ps_command.callback(show_all=False, interactive=True)
+                    devcode.list_command.callback(show_all=False, interactive=True)
 
     def test_interactive_missing_config_label_exits(self):
         rows = [
@@ -1842,14 +2053,14 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", return_value="1"):
                 with self.assertRaises(SystemExit):
-                    devcode.ps_command.callback(show_all=False, interactive=True)
+                    devcode.list_command.callback(show_all=False, interactive=True)
 
     def test_interactive_empty_table_no_prompt(self):
         ls_result = MagicMock(returncode=0, stdout="")
         prompted = []
         with patch("subprocess.run", return_value=ls_result):
             with patch("builtins.input", side_effect=lambda _: prompted.append(True) or "1"):
-                devcode.ps_command.callback(show_all=False, interactive=True)
+                devcode.list_command.callback(show_all=False, interactive=True)
         self.assertEqual(prompted, [])   # input() was never called
 
     def test_interactive_all_with_malformed_row_correct_selection(self):
@@ -1862,7 +2073,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", side_effect=[ls_result, inspect_result]):
             with patch("builtins.input", return_value="1"):
                 with patch("devcode._do_open") as mock_open:
-                    devcode.ps_command.callback(show_all=True, interactive=True)
+                    devcode.list_command.callback(show_all=True, interactive=True)
         mock_open.assert_called_once()
         self.assertEqual(mock_open.call_args.kwargs["projectpath"], "/home/user/myapp")
 
@@ -1880,7 +2091,7 @@ class TestCmdPs(unittest.TestCase):
         lines = []
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
-                devcode.ps_command.callback(show_all=False, interactive=False)
+                devcode.list_command.callback(show_all=False, interactive=False)
         # Find data rows (skip header)
         data_rows = [l for l in lines if "older222" in l or "newer111" in l]
         self.assertEqual(len(data_rows), 2)
@@ -2119,7 +2330,7 @@ class TestClickCLI(unittest.TestCase):
     def test_list_command(self):
         runner = CliRunner()
         with patch.object(devcode, "_list_template_names", return_value=["tmpl-a", "tmpl-b"]):
-            result = runner.invoke(devcode.cli, ["list"])
+            result = runner.invoke(devcode.cli, ["template", "list"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("tmpl-a", result.output)
         self.assertIn("tmpl-b", result.output)
@@ -2129,14 +2340,48 @@ class TestClickCLI(unittest.TestCase):
         with runner.isolated_filesystem():
             with patch.object(devcode, "_load_settings",
                                return_value={"template_sources": [os.path.abspath(".")]}):
-                result = runner.invoke(devcode.cli, ["new", "myapp", "no-such-base"])
+                result = runner.invoke(devcode.cli, ["template", "new", "myapp", "no-such-base"])
         self.assertNotEqual(result.exit_code, 0)
 
-    def test_ps_no_docker_exits(self):
+    def test_list_no_docker_exits(self):
         runner = CliRunner()
         with patch("subprocess.run", return_value=MagicMock(returncode=1, stdout="")):
-            result = runner.invoke(devcode.cli, ["ps"])
+            result = runner.invoke(devcode.cli, ["list"])
         self.assertNotEqual(result.exit_code, 0)
+
+
+class TestCLIV2Structure(unittest.TestCase):
+    def test_template_group_exists(self):
+        self.assertIn("template", devcode.cli.commands)
+
+    def test_source_group_exists_under_template(self):
+        template_cmd = devcode.cli.commands["template"]
+        self.assertIn("source", template_cmd.commands)
+
+    def test_template_list_exists(self):
+        self.assertIn("list", devcode.cli.commands["template"].commands)
+
+    def test_open_at_top_level(self):
+        self.assertIn("open", devcode.cli.commands)
+
+    def test_ps_no_longer_exists(self):
+        self.assertNotIn("ps", devcode.cli.commands)
+
+    def test_list_at_top_level_is_containers(self):
+        """Top-level 'list' must exist (container listing, replaces ps)."""
+        self.assertIn("list", devcode.cli.commands)
+
+    def test_template_new_exists(self):
+        self.assertIn("new", devcode.cli.commands["template"].commands)
+
+    def test_new_not_at_top_level(self):
+        self.assertNotIn("new", devcode.cli.commands)
+
+    def test_template_edit_exists(self):
+        self.assertIn("edit", devcode.cli.commands["template"].commands)
+
+    def test_edit_not_at_top_level(self):
+        self.assertNotIn("edit", devcode.cli.commands)
 
 
 class TestCompleteTemplates(unittest.TestCase):
@@ -2178,7 +2423,7 @@ class TestShellCompletion(unittest.TestCase):
 
     def test_new_base_has_template_completion(self):
         """new's base argument must have _complete_templates as its shell_complete callback."""
-        new_cmd = devcode.cli.commands["new"]
+        new_cmd = devcode.cli.commands["template"].commands["new"]
         param = next(p for p in new_cmd.params if p.name == "base")
         self.assertIs(param._custom_shell_complete, devcode._complete_templates)
 
@@ -2190,7 +2435,7 @@ class TestShellCompletion(unittest.TestCase):
 
     def test_edit_template_has_template_completion(self):
         """edit's template argument must use _complete_templates for shell completion."""
-        edit_cmd = devcode.cli.commands["edit"]
+        edit_cmd = devcode.cli.commands["template"].commands["edit"]
         param = next(p for p in edit_cmd.params if p.name == "template")
         self.assertIs(param._custom_shell_complete, devcode._complete_templates)
 

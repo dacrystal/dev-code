@@ -97,6 +97,20 @@ def _load_settings() -> dict:
         return dict(_DEFAULT_SETTINGS)
 
 
+def _save_settings(settings: dict) -> None:
+    """Write settings dict to settings.json. Exits on write failure."""
+    conf_dir = _conf_dir()
+    settings_path = os.path.join(conf_dir, "settings.json")
+    try:
+        os.makedirs(conf_dir, exist_ok=True)
+        with open(settings_path, "w") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+    except OSError as e:
+        logger.error("could not write settings file %s: %s", settings_path, e)
+        sys.exit(1)
+
+
 def resolve_template_search_path() -> list[str]:
     """Return ordered list of template search directories from settings.json."""
     settings = _load_settings()
@@ -674,6 +688,18 @@ def cli(ctx):
         click.echo(ctx.get_help())
 
 
+@cli.group("template")
+def template_group():
+    """Manage dev container templates."""
+    pass
+
+
+@template_group.group("source")
+def source_group():
+    """Manage template search paths."""
+    pass
+
+
 @cli.command("open")
 @click.argument("projectpath", type=click.Path(file_okay=False, resolve_path=True))
 @click.argument("template", required=False, shell_complete=_complete_templates)
@@ -686,7 +712,7 @@ def open_command(projectpath, template, container_folder, timeout, dry_run):
     _do_open(projectpath, template, container_folder, timeout, dry_run)
 
 
-@cli.command("new")
+@template_group.command("new")
 @click.argument("name")
 @click.argument("base", required=False, shell_complete=_complete_templates)
 @click.option("--edit", is_flag=True, help="Open the new template in VS Code after creating it.")
@@ -735,7 +761,7 @@ def new_command(name, base, edit):
         )
 
 
-@cli.command("edit")
+@template_group.command("edit")
 @click.argument("template", shell_complete=_complete_templates)
 def edit_command(template):
     """Open a template directory in VS Code for editing."""
@@ -746,9 +772,9 @@ def edit_command(template):
     subprocess.run(["code", template_root])
 
 
-@cli.command("list")
+@template_group.command("list")
 @click.option("--long", is_flag=True, help="Show description and path for each template.")
-def list_command(long):
+def template_list_command(long):
     """List available templates."""
     if not long:
         names = _list_template_names()
@@ -787,6 +813,63 @@ def list_command(long):
         print(_fmt_row(row, widths))
 
 
+@template_group.command("default")
+@click.argument("name", required=False)
+def template_default_command(name):
+    """Get or set the default template."""
+    settings = _load_settings()
+    if name is None:
+        current = settings.get("default_template", "")
+        if current:
+            click.echo(current)
+        return
+    settings["default_template"] = name
+    _save_settings(settings)
+    click.echo(f"default template set to '{name}'")
+
+
+@source_group.command("list")
+def source_list_command():
+    """List configured template search paths."""
+    settings = _load_settings()
+    for path in settings.get("template_sources", []):
+        click.echo(path)
+
+
+@source_group.command("add")
+@click.argument("path", type=click.Path())
+def source_add_command(path):
+    """Add a template search path."""
+    path = os.path.expanduser(path)
+    path = os.path.abspath(path)
+    settings = _load_settings()
+    sources = settings.get("template_sources", [])
+    if path not in sources:
+        sources.append(path)
+        settings["template_sources"] = sources
+        _save_settings(settings)
+        click.echo(f"added '{path}' to template_sources")
+    else:
+        click.echo(f"'{path}' is already in template_sources")
+
+
+@source_group.command("remove")
+@click.argument("path", type=click.Path())
+def source_remove_command(path):
+    """Remove a template search path."""
+    path = os.path.expanduser(path)
+    path = os.path.abspath(path)
+    settings = _load_settings()
+    sources = settings.get("template_sources", [])
+    if path not in sources:
+        logger.error("'%s' not found in template_sources", path)
+        sys.exit(1)
+    sources.remove(path)
+    settings["template_sources"] = sources
+    _save_settings(settings)
+    click.echo(f"removed '{path}' from template_sources")
+
+
 @cli.command("completion")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
 def completion_command(shell):
@@ -797,10 +880,10 @@ def completion_command(shell):
         click.echo(f'eval "$(_DEVCODE_COMPLETE={shell}_source devcode)"')
 
 
-@cli.command("ps")
+@cli.command("list")
 @click.option("-a", "--all", "show_all", is_flag=True, help="Show all containers (not just running).")
 @click.option("-i", "--interactive", is_flag=True, help="Prompt to reopen a listed container.")
-def ps_command(show_all, interactive):
+def list_command(show_all, interactive):
     """List dev containers."""
     fmt = "{{.CreatedAt}}\t{{.ID}}\t{{.Label \"devcontainer.local_folder\"}}\t{{.Label \"devcontainer.config_file\"}}\t{{.Status}}"
     result = subprocess.run(
@@ -891,6 +974,66 @@ def ps_command(show_all, interactive):
         timeout=300,
         dry_run=False,
     )
+
+
+@cli.command("prune")
+@click.argument("path", required=False, type=click.Path(file_okay=False, resolve_path=True))
+@click.option("--all-projects", is_flag=True, help="Prune containers across all projects.")
+@click.option("--include-recent", is_flag=True, help="Also prune the most recently used container.")
+def prune_command(path, all_projects, include_recent):
+    """Remove stopped containers."""
+    if not path and not all_projects:
+        click.echo(
+            "error: specify a project path or use --all-projects to prune across all projects",
+            err=True,
+        )
+        sys.exit(1)
+
+    fmt = "{{.CreatedAt}}\t{{.ID}}\t{{.Label \"devcontainer.local_folder\"}}\t{{.Label \"devcontainer.config_file\"}}\t{{.Status}}"
+    filter_args = ["--filter", "label=devcontainer.local_folder"]
+    if path:
+        label_value = wsl_to_windows(path) if is_wsl() else path
+        filter_args = ["--filter", f"label=devcontainer.local_folder={label_value}"]
+
+    result = subprocess.run(
+        ["docker", "container", "ls", "-a"] + filter_args + ["--format", fmt],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        logger.error("docker ls failed — is Docker running?")
+        sys.exit(1)
+
+    rows = [line.split("\t") for line in result.stdout.splitlines() if line.strip()]
+    stopped = [r for r in rows if len(r) >= 5 and not r[4].startswith("Up")]
+
+    if not stopped:
+        click.echo("no stopped containers to prune")
+        return
+
+    # Sort ascending by CreatedAt; keep the last (most recent) unless --include-recent
+    stopped.sort(key=lambda r: r[0])
+    to_prune = stopped if include_recent else stopped[:-1]
+
+    if not to_prune:
+        click.echo("no containers to prune (use --include-recent to also prune the most recent)")
+        return
+
+    click.echo(f"Containers to remove ({len(to_prune)}):")
+    for r in to_prune:
+        cid, folder = r[1][:12], r[2]
+        click.echo(f"  {cid}  {folder}")
+
+    if not click.confirm(f"\nRemove {len(to_prune)} container(s)?", default=False):
+        click.echo("aborted")
+        return
+
+    for r in to_prune:
+        cid = r[1]
+        rm_result = subprocess.run(["docker", "rm", cid], capture_output=True, text=True)
+        if rm_result.returncode != 0:
+            logger.warning("failed to remove %s: %s", cid[:12], rm_result.stderr.strip())
+        else:
+            click.echo(f"removed {cid[:12]}")
 
 
 if __name__ == "__main__":
