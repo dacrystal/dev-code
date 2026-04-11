@@ -228,7 +228,7 @@ class TestCmdOpen(unittest.TestCase):
         uri = launched[0][2]
         hex_part = uri.split("vscode-remote://dev-container+")[1].split("/")[0]
         decoded = bytes.fromhex(hex_part).decode("utf-8")
-        self.assertIn(real_dir, decoded)
+        self.assertIn(os.path.realpath(real_dir), decoded)
         self.assertNotIn(link_dir, decoded)
 
     def test_uses_explicit_template(self):
@@ -362,7 +362,7 @@ class TestSaveSettings(unittest.TestCase):
 class TestResolveTemplateSearchPath(unittest.TestCase):
     def test_uses_template_sources_from_settings(self):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "/b"]}):
-            self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b"])
+            self.assertEqual(devcode.resolve_template_search_path(), [os.path.realpath("/a"), os.path.realpath("/b")])
 
     def test_expands_tilde_in_sources(self):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["~/templates"]}):
@@ -376,11 +376,11 @@ class TestResolveTemplateSearchPath(unittest.TestCase):
         with patch.object(devcode, "_load_settings", return_value={}):
             with patch.dict(os.environ, env, clear=True):
                 result = devcode.resolve_template_search_path()
-        self.assertEqual(result, [os.path.join("/xdg/data", "dev-code", "templates")])
+        self.assertEqual(result, [os.path.realpath(os.path.join("/xdg/data", "dev-code", "templates"))])
 
     def test_skips_empty_entries(self):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "", "/b"]}):
-            self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b"])
+            self.assertEqual(devcode.resolve_template_search_path(), [os.path.realpath("/a"), os.path.realpath("/b")])
 
 
 
@@ -424,13 +424,13 @@ class TestResolveWriteTarget(unittest.TestCase):
             with patch.object(devcode, "_load_settings", return_value={"template_write_dir": f.name}):
                 with patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=False):
                     result = devcode._resolve_write_target()
-            self.assertEqual(result, "/xdg/dev-code/templates")
+            self.assertEqual(result, os.path.join("/xdg", "dev-code", "templates"))
 
     def test_xdg_data_home_used_as_fallback(self):
         with patch.object(devcode, "_load_settings", return_value={"template_write_dir": None}):
             with patch.dict(os.environ, {"XDG_DATA_HOME": "/custom/xdg"}, clear=False):
                 result = devcode._resolve_write_target()
-        self.assertEqual(result, "/custom/xdg/dev-code/templates")
+        self.assertEqual(result, os.path.join("/custom/xdg", "dev-code", "templates"))
 
     def test_xdg_default_when_no_env(self):
         with patch.object(devcode, "_load_settings", return_value={"template_write_dir": None}):
@@ -445,7 +445,7 @@ class TestResolveWriteTarget(unittest.TestCase):
         with patch.object(devcode, "_load_settings", return_value={}):
             with patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=False):
                 result = devcode._resolve_write_target()
-        self.assertEqual(result, "/xdg/dev-code/templates")
+        self.assertEqual(result, os.path.join("/xdg", "dev-code", "templates"))
 
 
 class TestGetBuiltinTemplatePath(unittest.TestCase):
@@ -1594,9 +1594,8 @@ class TestCmdList(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         data_row = lines[1]
         self.assertIn("mytemplate", data_row)
-        # PATH appears in data row; no desc value between name and path
-        template_path = os.path.join(d, "mytemplate")
-        self.assertIn(template_path, data_row)
+        # PATH column contains the temp dir name (robust against ~ abbreviation and 8.3 paths)
+        self.assertIn(os.path.basename(d), data_row)
 
     def test_long_malformed_json_shows_empty_desc(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1608,8 +1607,8 @@ class TestCmdList(unittest.TestCase):
         self.assertEqual(len(lines), 2)  # header + 1 data row
         data_row = lines[1]
         self.assertIn("broken", data_row)
-        template_path = os.path.join(d, "broken")
-        self.assertIn(template_path, data_row)
+        # PATH column contains the temp dir name (robust against ~ abbreviation and 8.3 paths)
+        self.assertIn(os.path.basename(d), data_row)
 
     def test_long_deduplication_first_match_wins(self):
         with tempfile.TemporaryDirectory() as d1:
@@ -1677,12 +1676,15 @@ class TestCmdTemplateSource(unittest.TestCase):
     def test_source_add_appends_path(self):
         runner = CliRunner()
         saved = {}
-        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a"]}):
-            with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
-                result = runner.invoke(devcode.cli, ["template", "source", "add", "/b"])
+        with tempfile.TemporaryDirectory() as da:
+            with tempfile.TemporaryDirectory() as db:
+                a, b = os.path.abspath(da), os.path.abspath(db)
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [a]}):
+                    with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
+                        result = runner.invoke(devcode.cli, ["template", "source", "add", b])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("/b", saved.get("template_sources", []))
-        self.assertIn("/a", saved.get("template_sources", []))
+        self.assertIn(b, saved.get("template_sources", []))
+        self.assertIn(a, saved.get("template_sources", []))
 
     def test_source_add_expands_tilde(self):
         runner = CliRunner()
@@ -1697,9 +1699,11 @@ class TestCmdTemplateSource(unittest.TestCase):
     def test_source_add_idempotent(self):
         """Adding an already-present path does not duplicate it."""
         runner = CliRunner()
-        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a"]}):
-            with patch.object(devcode, "_save_settings") as mock_save:
-                result = runner.invoke(devcode.cli, ["template", "source", "add", "/a"])
+        with tempfile.TemporaryDirectory() as d:
+            a = os.path.abspath(d)
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [a]}):
+                with patch.object(devcode, "_save_settings") as mock_save:
+                    result = runner.invoke(devcode.cli, ["template", "source", "add", a])
         self.assertEqual(result.exit_code, 0)
         # _save_settings should not be called when path is already present
         mock_save.assert_not_called()
@@ -1707,12 +1711,15 @@ class TestCmdTemplateSource(unittest.TestCase):
     def test_source_remove_removes_path(self):
         runner = CliRunner()
         saved = {}
-        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "/b"]}):
-            with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
-                result = runner.invoke(devcode.cli, ["template", "source", "remove", "/a"])
+        with tempfile.TemporaryDirectory() as da:
+            with tempfile.TemporaryDirectory() as db:
+                a, b = os.path.abspath(da), os.path.abspath(db)
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [a, b]}):
+                    with patch.object(devcode, "_save_settings", side_effect=lambda s: saved.update(s)):
+                        result = runner.invoke(devcode.cli, ["template", "source", "remove", a])
         self.assertEqual(result.exit_code, 0)
-        self.assertNotIn("/a", saved.get("template_sources", []))
-        self.assertIn("/b", saved.get("template_sources", []))
+        self.assertNotIn(a, saved.get("template_sources", []))
+        self.assertIn(b, saved.get("template_sources", []))
 
     def test_source_remove_exits_if_not_found(self):
         runner = CliRunner()
