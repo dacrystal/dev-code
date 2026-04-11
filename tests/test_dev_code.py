@@ -1,10 +1,8 @@
 import importlib.util
-import io
 import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -1145,7 +1143,7 @@ class TestRunPostLaunch(unittest.TestCase):
     def test_missing_target_warns_and_skips(self):
         entries = [{"source": "/home/.claude"}]
         with self.assertLogs("devcode", level="WARNING") as cm:
-            calls = self._run(entries)
+            self._run(entries)
         self.assertTrue(any("target" in line.lower() for line in cm.output))
 
     def test_override_false_skips_when_target_exists(self):
@@ -1461,7 +1459,6 @@ class TestRunPostLaunch(unittest.TestCase):
                     with patch("os.path.exists", return_value=True):
                         with patch("os.path.isdir", return_value=False):
                             calls = []
-                            original_run = subprocess.run
                             def tracking_run(cmd, **kw):
                                 calls.append(cmd)
                                 return fake_run(cmd, **kw)
@@ -1552,7 +1549,7 @@ class TestCmdList(unittest.TestCase):
     def test_long_no_templates_shows_hint(self):
         with tempfile.TemporaryDirectory() as d:
             lines = self._run_list(d, long=True)
-        combined = "\n".join(str(l) for l in lines)
+        combined = "\n".join(str(line) for line in lines)
         self.assertIn("(no templates)", combined)
         self.assertNotIn("devcode init", combined)
 
@@ -1568,7 +1565,7 @@ class TestCmdList(unittest.TestCase):
     def test_no_templates_shows_empty_message(self):
         with tempfile.TemporaryDirectory() as d:
             lines = self._run_list(d)
-        combined = "\n".join(str(l) for l in lines)
+        combined = "\n".join(str(line) for line in lines)
         self.assertIn("(no templates)", combined)
         self.assertNotIn("devcode init", combined)
 
@@ -1768,7 +1765,7 @@ class TestCmdPrune(unittest.TestCase):
                 return mock_rm
             return mock_list
         with patch("subprocess.run", side_effect=fake_run):
-            result = runner.invoke(devcode.cli, ["prune", "--all-projects"], input="y\n")
+            runner.invoke(devcode.cli, ["prune", "--all-projects"], input="y\n")
         self.assertIn("old111", removed)
         self.assertNotIn("new222", removed)
 
@@ -1785,7 +1782,7 @@ class TestCmdPrune(unittest.TestCase):
                 return mock_rm
             return mock_list
         with patch("subprocess.run", side_effect=fake_run):
-            result = runner.invoke(devcode.cli, ["prune", "--all-projects", "--include-recent"], input="y\n")
+            runner.invoke(devcode.cli, ["prune", "--all-projects", "--include-recent"], input="y\n")
         self.assertIn("old111", removed)
         self.assertIn("new222", removed)
 
@@ -2061,7 +2058,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
                 devcode.list_command.callback(show_all=False, interactive=False)
-        self.assertTrue(any("no running devcontainers" in str(l) for l in lines))
+        self.assertTrue(any("no running devcontainers" in str(line) for line in lines))
 
     def test_docker_unavailable_exits(self):
         mock_result = MagicMock(returncode=1, stdout="")
@@ -2125,7 +2122,7 @@ class TestCmdPs(unittest.TestCase):
         with patch("subprocess.run", return_value=mock_result):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
                 devcode.list_command.callback(show_all=True, interactive=False)
-        self.assertTrue(any("no devcontainers" in str(l) and "running" not in str(l) for l in lines))
+        self.assertTrue(any("no devcontainers" in str(line) and "running" not in str(line) for line in lines))
 
     def test_interactive_valid_selection_opens_container(self):
         rows = [
@@ -2242,11 +2239,11 @@ class TestCmdPs(unittest.TestCase):
             with patch("builtins.print", side_effect=lambda *a, **kw: lines.append(a[0] if a else "")):
                 devcode.list_command.callback(show_all=False, interactive=False)
         # Find data rows (skip header)
-        data_rows = [l for l in lines if "older222" in l or "newer111" in l]
+        data_rows = [line for line in lines if "older222" in line or "newer111" in line]
         self.assertEqual(len(data_rows), 2)
         # older222 must appear before newer111
-        idx_older = next(i for i, l in enumerate(lines) if "older222" in l)
-        idx_newer = next(i for i, l in enumerate(lines) if "newer111" in l)
+        idx_older = next(i for i, line in enumerate(lines) if "older222" in line)
+        idx_newer = next(i for i, line in enumerate(lines) if "newer111" in line)
         self.assertLess(idx_older, idx_newer)
         # older222 must be row #1
         self.assertIn("1", lines[idx_older])

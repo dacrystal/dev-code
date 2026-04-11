@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import click
 import click.shell_completion
-import importlib.metadata
 import json
 import logging
 import os
@@ -597,8 +596,8 @@ def _do_open(projectpath: str, template, container_folder, timeout: int, dry_run
     if template:
         config_file = resolve_template(template)
     else:
-        config_file = _find_container_config_for_project(project_path)
-        if config_file is None:
+        found = _find_container_config_for_project(project_path)
+        if found is None:
             settings = _load_settings()
             default = settings.get("default_template", "")
             if not default:
@@ -607,6 +606,8 @@ def _do_open(projectpath: str, template, container_folder, timeout: int, dry_run
                 )
                 sys.exit(1)
             config_file = resolve_template(default)
+        else:
+            config_file = found
 
     if not container_folder:
         data = parse_devcontainer_json(config_file, cwd=project_path)
