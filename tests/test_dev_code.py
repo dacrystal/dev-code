@@ -228,7 +228,9 @@ class TestCmdOpen(unittest.TestCase):
         uri = launched[0][2]
         hex_part = uri.split("vscode-remote://dev-container+")[1].split("/")[0]
         decoded = bytes.fromhex(hex_part).decode("utf-8")
-        self.assertIn(os.path.realpath(real_dir), decoded)
+        # decoded is raw JSON — backslashes are doubled on Windows
+        expected = os.path.realpath(real_dir).replace("\\", "\\\\")
+        self.assertIn(expected, decoded)
         self.assertNotIn(link_dir, decoded)
 
     def test_uses_explicit_template(self):
