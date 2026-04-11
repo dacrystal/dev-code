@@ -1016,6 +1016,15 @@ def list_command(show_all, interactive):
     )
 
 
+@cli.command("ps", hidden=True)
+@click.option("-a", "--all", "show_all", is_flag=True, help="Show all containers (not just running).")
+@click.option("-i", "--interactive", is_flag=True, help="Prompt to reopen a listed container.")
+@click.pass_context
+def ps_command(ctx, show_all, interactive):
+    """List dev containers (alias for 'list')."""
+    ctx.invoke(list_command, show_all=show_all, interactive=interactive)
+
+
 @cli.command("prune")
 @click.argument("path", required=False, type=click.Path(file_okay=False, resolve_path=True))
 @click.option("--all-projects", is_flag=True, help="Prune containers across all projects.")

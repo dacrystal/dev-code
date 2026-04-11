@@ -2257,6 +2257,22 @@ class TestCmdPs(unittest.TestCase):
         # older222 must be row #1
         self.assertIn("1", lines[idx_older])
 
+    def test_ps_alias_registered_and_hidden(self):
+        self.assertIn("ps", devcode.cli.commands)
+        self.assertTrue(devcode.cli.commands["ps"].hidden)
+
+    def test_ps_alias_invokes_list(self):
+        rows = [("2026-03-24 10:00:00 +0000 UTC", "abc123def456", "/home/user/myapp",
+                 "/home/user/.local/share/dev-code/templates/dev/.devcontainer/devcontainer.json",
+                 "Up 5 minutes")]
+        mock_result = MagicMock(returncode=0, stdout=self._docker_output(rows))
+        from click.testing import CliRunner
+        runner = CliRunner()
+        with patch("subprocess.run", return_value=mock_result):
+            result = runner.invoke(devcode.cli, ["ps"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("abc123def456", result.output)
+
 
 class TestDoOpen(unittest.TestCase):
     def test_errors_on_nonexistent_projectpath(self):
@@ -2519,8 +2535,10 @@ class TestCLIV2Structure(unittest.TestCase):
     def test_open_at_top_level(self):
         self.assertIn("open", devcode.cli.commands)
 
-    def test_ps_no_longer_exists(self):
-        self.assertNotIn("ps", devcode.cli.commands)
+    def test_ps_is_hidden_alias(self):
+        """ps is a hidden alias for list, not a public command."""
+        self.assertIn("ps", devcode.cli.commands)
+        self.assertTrue(devcode.cli.commands["ps"].hidden)
 
     def test_list_at_top_level_is_containers(self):
         """Top-level 'list' must exist (container listing, replaces ps)."""
