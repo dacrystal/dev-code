@@ -1,6 +1,7 @@
 import importlib.util
 import io
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -27,7 +28,7 @@ class TestSmoke(unittest.TestCase):
         assert callable(devcode.wsl_to_windows)
         assert callable(devcode.build_devcontainer_uri)
         assert callable(devcode.resolve_template_search_path)
-        assert callable(devcode._write_template_dir)
+        assert callable(devcode._resolve_write_target)
         assert callable(devcode.resolve_template)
 
     def test_banner_is_string(self):
@@ -383,9 +384,70 @@ class TestResolveTemplateSearchPath(unittest.TestCase):
         with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/a", "", "/b"]}):
             self.assertEqual(devcode.resolve_template_search_path(), ["/a", "/b"])
 
-    def test_write_template_dir_returns_first_entry(self):
-        with patch.object(devcode, "_load_settings", return_value={"template_sources": ["/first", "/second"]}):
-            self.assertEqual(devcode._write_template_dir(), "/first")
+
+
+class TestResolveWriteTarget(unittest.TestCase):
+    def test_path_override_wins(self):
+        """--path overrides everything."""
+        with tempfile.TemporaryDirectory() as d:
+            result = devcode._resolve_write_target(path_override=d)
+            self.assertEqual(result, os.path.realpath(d))
+
+    def test_path_override_expands_dot(self):
+        """--path . resolves to cwd."""
+        result = devcode._resolve_write_target(path_override=".")
+        self.assertEqual(result, os.path.realpath("."))
+
+    def test_path_override_expands_tilde(self):
+        result = devcode._resolve_write_target(path_override="~/foo")
+        self.assertEqual(result, os.path.realpath(os.path.expanduser("~/foo")))
+
+    def test_path_override_exits_if_existing_file(self):
+        """--path pointing to an existing file (not dir) must exit with error."""
+        with tempfile.NamedTemporaryFile() as f:
+            with self.assertRaises(SystemExit):
+                devcode._resolve_write_target(path_override=f.name)
+
+    def test_settings_write_dir_used_when_no_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(devcode, "_load_settings", return_value={"template_write_dir": d}):
+                result = devcode._resolve_write_target()
+            self.assertEqual(result, os.path.realpath(d))
+
+    def test_settings_write_dir_expands_tilde(self):
+        home = os.path.expanduser("~")
+        with patch.object(devcode, "_load_settings", return_value={"template_write_dir": "~/mydir"}):
+            result = devcode._resolve_write_target()
+        self.assertEqual(result, os.path.realpath(os.path.join(home, "mydir")))
+
+    def test_settings_write_dir_is_file_falls_back_to_xdg(self):
+        """If template_write_dir resolves to a file, fall back to XDG."""
+        with tempfile.NamedTemporaryFile() as f:
+            with patch.object(devcode, "_load_settings", return_value={"template_write_dir": f.name}):
+                with patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=False):
+                    result = devcode._resolve_write_target()
+            self.assertEqual(result, "/xdg/dev-code/templates")
+
+    def test_xdg_data_home_used_as_fallback(self):
+        with patch.object(devcode, "_load_settings", return_value={"template_write_dir": None}):
+            with patch.dict(os.environ, {"XDG_DATA_HOME": "/custom/xdg"}, clear=False):
+                result = devcode._resolve_write_target()
+        self.assertEqual(result, "/custom/xdg/dev-code/templates")
+
+    def test_xdg_default_when_no_env(self):
+        with patch.object(devcode, "_load_settings", return_value={"template_write_dir": None}):
+            env = {k: v for k, v in os.environ.items() if k != "XDG_DATA_HOME"}
+            with patch.dict(os.environ, env, clear=True):
+                result = devcode._resolve_write_target()
+        home = os.path.expanduser("~")
+        self.assertEqual(result, os.path.join(home, ".local", "share", "dev-code", "templates"))
+
+    def test_none_write_dir_key_absent_falls_back_to_xdg(self):
+        """Settings without template_write_dir key behaves like None."""
+        with patch.object(devcode, "_load_settings", return_value={}):
+            with patch.dict(os.environ, {"XDG_DATA_HOME": "/xdg"}, clear=False):
+                result = devcode._resolve_write_target()
+        self.assertEqual(result, "/xdg/dev-code/templates")
 
 
 class TestGetBuiltinTemplatePath(unittest.TestCase):
@@ -1762,9 +1824,9 @@ class TestCmdNew(unittest.TestCase):
         with tempfile.TemporaryDirectory() as pkg_dir:
             self._setup_pkg(pkg_dir)
             with tempfile.TemporaryDirectory() as user_dir:
-                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir], "template_write_dir": user_dir}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        devcode.new_command.callback(name="myapp", base=None, edit=False)
+                        devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=None)
                 self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_creates_template_from_explicit_base(self):
@@ -1774,34 +1836,34 @@ class TestCmdNew(unittest.TestCase):
             os.makedirs(base_path)
             open(os.path.join(base_path, "devcontainer.json"), "w").close()
 
-            with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
-                devcode.new_command.callback(name="myapp", base="mybase", edit=False)
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir], "template_write_dir": user_dir}):
+                devcode.new_command.callback(name="myapp", base="mybase", edit=False, write_path=None)
             self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_exits_if_name_already_exists(self):
         with tempfile.TemporaryDirectory() as user_dir:
             existing = os.path.join(user_dir, "myapp")
             os.makedirs(existing)
-            with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+            with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir], "template_write_dir": user_dir}):
                 with self.assertRaises(SystemExit):
-                    devcode.new_command.callback(name="myapp", base=None, edit=False)
+                    devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=None)
 
     def test_exits_if_base_not_found(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
             with tempfile.TemporaryDirectory() as user_dir:
-                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir], "template_write_dir": user_dir}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                         with self.assertRaises(SystemExit):
-                            devcode.new_command.callback(name="myapp", base="no-such-base", edit=False)
+                            devcode.new_command.callback(name="myapp", base="no-such-base", edit=False, write_path=None)
 
     def test_edit_flag_calls_do_open(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
             self._setup_pkg(pkg_dir)
             with tempfile.TemporaryDirectory() as user_dir:
-                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir], "template_write_dir": user_dir}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
                         with patch.object(devcode, "_do_open") as mock_open:
-                            devcode.new_command.callback(name="myapp", base=None, edit=True)
+                            devcode.new_command.callback(name="myapp", base=None, edit=True, write_path=None)
                 mock_open.assert_called_once()
                 self.assertEqual(mock_open.call_args.kwargs["template"], "myapp")
                 self.assertEqual(mock_open.call_args.kwargs["projectpath"], os.path.join(user_dir, "myapp"))
@@ -1810,21 +1872,108 @@ class TestCmdNew(unittest.TestCase):
         with tempfile.TemporaryDirectory() as pkg_dir:
             self._setup_pkg(pkg_dir)
             with tempfile.TemporaryDirectory() as user_dir:
-                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir]}):
+                with patch.object(devcode, "_load_settings", return_value={"template_sources": [user_dir], "template_write_dir": user_dir}):
                     with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
-                        devcode.new_command.callback(name="myapp", base=None, edit=False)
+                        devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=None)
                 self.assertTrue(os.path.isdir(os.path.join(user_dir, "myapp")))
 
     def test_base_found_in_second_search_dir(self):
         with tempfile.TemporaryDirectory() as d1:
             with tempfile.TemporaryDirectory() as d2:
-                base = os.path.join(d2, "mybase", ".devcontainer")
-                os.makedirs(base)
-                open(os.path.join(base, "devcontainer.json"), "w").close()
-                with patch.object(devcode, "_load_settings", return_value={"template_sources": [d1, d2]}):
-                    devcode.new_command.callback(name="myapp", base="mybase", edit=False)
-                # writes to first dir
-                self.assertTrue(os.path.isdir(os.path.join(d1, "myapp")))
+                with tempfile.TemporaryDirectory() as write_dir:
+                    base = os.path.join(d2, "mybase", ".devcontainer")
+                    os.makedirs(base)
+                    open(os.path.join(base, "devcontainer.json"), "w").close()
+                    with patch.object(devcode, "_load_settings", return_value={
+                        "template_sources": [d1, d2],
+                        "template_write_dir": write_dir,
+                    }):
+                        devcode.new_command.callback(name="myapp", base="mybase", edit=False, write_path=None)
+                    # writes to template_write_dir, not to first source
+                    self.assertTrue(os.path.isdir(os.path.join(write_dir, "myapp")))
+                    self.assertFalse(os.path.isdir(os.path.join(d1, "myapp")))
+
+    def test_path_flag_overrides_write_dir(self):
+        """--path writes the template to the given directory."""
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            self._setup_pkg(pkg_dir)
+            with tempfile.TemporaryDirectory() as default_dir:
+                with tempfile.TemporaryDirectory() as override_dir:
+                    with patch.object(devcode, "_load_settings", return_value={
+                        "template_sources": [default_dir, override_dir],
+                        "template_write_dir": default_dir,
+                    }):
+                        with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                            devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=override_dir)
+                    self.assertTrue(os.path.isdir(os.path.join(override_dir, "myapp")))
+                    self.assertFalse(os.path.isdir(os.path.join(default_dir, "myapp")))
+
+    def test_warns_when_write_dir_not_in_sources(self):
+        """A warning is emitted if the write dir is not in template_sources."""
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            self._setup_pkg(pkg_dir)
+            with tempfile.TemporaryDirectory() as sources_dir:
+                with tempfile.TemporaryDirectory() as write_dir:
+                    with patch.object(devcode, "_load_settings", return_value={
+                        "template_sources": [sources_dir],
+                        "template_write_dir": write_dir,
+                    }):
+                        with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                            with self.assertLogs("devcode", level="WARNING") as cm:
+                                devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=None)
+                    self.assertTrue(any("not in template_sources" in line for line in cm.output))
+
+    def test_no_warning_when_write_dir_in_sources(self):
+        """No warning when write dir is one of the template_sources."""
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            self._setup_pkg(pkg_dir)
+            with tempfile.TemporaryDirectory() as user_dir:
+                with patch.object(devcode, "_load_settings", return_value={
+                    "template_sources": [user_dir],
+                    "template_write_dir": user_dir,
+                }):
+                    with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                        with self.assertLogs("devcode", level="WARNING") as cm:
+                            logging.getLogger("devcode").warning("sentinel")
+                            devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=None)
+                        # Only the sentinel warning — none from new_command
+                        self.assertFalse(any("not in template_sources" in line for line in cm.output))
+
+    def test_path_dot_writes_to_cwd(self):
+        """--path . resolves to cwd."""
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            self._setup_pkg(pkg_dir)
+            with tempfile.TemporaryDirectory() as cwd:
+                orig = os.getcwd()
+                os.chdir(cwd)
+                try:
+                    with patch.object(devcode, "_load_settings", return_value={
+                        "template_sources": [],
+                        "template_write_dir": None,
+                    }):
+                        with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                            with self.assertLogs("devcode", level="WARNING"):
+                                devcode.new_command.callback(name="myapp", base=None, edit=False, write_path=".")
+                    self.assertTrue(os.path.isdir(os.path.join(cwd, "myapp")))
+                finally:
+                    os.chdir(orig)
+
+    def test_path_flag_warns_when_not_in_sources(self):
+        """--path pointing outside template_sources still triggers the warning."""
+        with tempfile.TemporaryDirectory() as pkg_dir:
+            self._setup_pkg(pkg_dir)
+            with tempfile.TemporaryDirectory() as sources_dir:
+                with tempfile.TemporaryDirectory() as override_dir:
+                    with patch.object(devcode, "_load_settings", return_value={
+                        "template_sources": [sources_dir],
+                        "template_write_dir": sources_dir,
+                    }):
+                        with patch.object(devcode, "__file__", os.path.join(pkg_dir, "devcode.py")):
+                            with self.assertLogs("devcode", level="WARNING") as cm:
+                                devcode.new_command.callback(
+                                    name="myapp", base=None, edit=False, write_path=override_dir
+                                )
+                    self.assertTrue(any("not in template_sources" in line for line in cm.output))
 
 
 class TestCmdEdit(unittest.TestCase):

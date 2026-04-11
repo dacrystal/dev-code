@@ -29,6 +29,7 @@ KNOWN_CP_FIELDS = {"source", "target", "override", "owner", "group", "permission
 _DEFAULT_SETTINGS = {
     "template_sources": ["~/.local/share/dev-code/templates"],
     "default_template": "dev-code",
+    "template_write_dir": None,
 }
 
 def _configure_logging(verbose: bool) -> None:
@@ -119,13 +120,41 @@ def resolve_template_search_path() -> list[str]:
         xdg = os.environ.get(
             "XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")
         )
-        return [os.path.join(xdg, "dev-code", "templates")]
-    return [os.path.expanduser(d) for d in sources if d]
+        return [os.path.realpath(os.path.join(xdg, "dev-code", "templates"))]
+    return [os.path.realpath(os.path.expanduser(d)) for d in sources if d]
 
 
-def _write_template_dir() -> str:
-    """Return the first (canonical write) directory from the template search path."""
-    return resolve_template_search_path()[0]
+def _resolve_write_target(path_override=None) -> str:
+    """Resolve the directory where new templates are written.
+
+    Priority (highest to lowest):
+    1. path_override  — the --path flag value
+    2. settings.template_write_dir  — persistent setting
+    3. XDG_DATA_HOME/dev-code/templates  — unconditional fallback
+    """
+    if path_override is not None:
+        resolved = os.path.realpath(os.path.expanduser(path_override))
+        if os.path.exists(resolved) and not os.path.isdir(resolved):
+            logger.error("--path '%s' is not a directory", path_override)
+            sys.exit(1)
+        return resolved
+
+    settings = _load_settings()
+    write_dir = settings.get("template_write_dir")
+    if write_dir:
+        resolved = os.path.realpath(os.path.expanduser(write_dir))
+        if os.path.exists(resolved) and not os.path.isdir(resolved):
+            logger.warning(
+                "template_write_dir '%s' is not a directory, falling back to XDG default",
+                write_dir,
+            )
+        else:
+            return resolved
+
+    xdg = os.environ.get(
+        "XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")
+    )
+    return os.path.join(xdg, "dev-code", "templates")
 
 
 def _list_template_names() -> list:
@@ -716,9 +745,10 @@ def open_command(projectpath, template, container_folder, timeout, dry_run):
 @click.argument("name")
 @click.argument("base", required=False, shell_complete=_complete_templates)
 @click.option("--edit", is_flag=True, help="Open the new template in VS Code after creating it.")
-def new_command(name, base, edit):
+@click.option("--path", "write_path", default=None, help="Directory to write the new template into.")
+def new_command(name, base, edit, write_path):
     """Create a new template by copying a base template."""
-    write_dir = _write_template_dir()
+    write_dir = _resolve_write_target(write_path)
     dest = os.path.join(write_dir, name)
 
     # Step 1: fail if name already exists
@@ -749,6 +779,15 @@ def new_command(name, base, edit):
     # Step 5: copy
     shutil.copytree(base_src, dest)
     print(f"Created template '{name}' at {dest}")
+
+    # Warn if write_dir is not discoverable
+    # resolve_template_search_path already returns realpath'd entries
+    search_paths = resolve_template_search_path()
+    if os.path.realpath(write_dir) not in search_paths:
+        logger.warning(
+            "write dir '%s' is not in template_sources — new template may not be discoverable",
+            write_dir,
+        )
 
     # Step 6: --edit
     if edit:
