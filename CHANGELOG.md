@@ -1,3 +1,9 @@
+## [0.3.1] - 2026-04-11
+
+### Added
+
+- Update demos to CLI v2 and add hidden ps alias for list
+
 ## [0.3.0] - 2026-04-11
 
 ### Added
