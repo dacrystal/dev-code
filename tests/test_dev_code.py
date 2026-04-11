@@ -540,7 +540,7 @@ class TestResolveTemplate(unittest.TestCase):
             open(cfg, "w").close()
             with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 result = devcode.resolve_template("mytemplate")
-        self.assertEqual(result, cfg)
+        self.assertEqual(result, os.path.realpath(cfg))
 
     def test_exits_when_not_found(self):
         with tempfile.TemporaryDirectory() as d:
@@ -623,7 +623,7 @@ class TestResolveTemplate(unittest.TestCase):
                             result = devcode.resolve_template(dirname)
             finally:
                 os.chdir(old_cwd)
-        self.assertEqual(result, template_cfg)
+        self.assertEqual(result, os.path.realpath(template_cfg))
         self.assertTrue(any("matches both" in line for line in cm.output))
         self.assertTrue(any("Use './" in line for line in cm.output))
 
@@ -663,7 +663,7 @@ class TestResolveTemplate(unittest.TestCase):
             open(cfg, "w").close()
             with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 result = devcode.resolve_template("mytemplate")
-        self.assertEqual(result, cfg)
+        self.assertEqual(result, os.path.realpath(cfg))
 
     def test_does_not_fall_back_to_builtin(self):
         """Built-in is no longer a fallback for resolve_template."""
@@ -686,7 +686,7 @@ class TestResolveTemplate(unittest.TestCase):
                 open(cfg, "w").close()
                 with patch.object(devcode, "_load_settings", return_value={"template_sources": [d1, d2]}):
                     result = devcode.resolve_template("mytemplate")
-        self.assertEqual(result, cfg)
+        self.assertEqual(result, os.path.realpath(cfg))
 
 
 class TestResolveAsPath(unittest.TestCase):
@@ -1863,7 +1863,7 @@ class TestCmdNew(unittest.TestCase):
                             devcode.new_command.callback(name="myapp", base=None, edit=True, write_path=None)
                 mock_open.assert_called_once()
                 self.assertEqual(mock_open.call_args.kwargs["template"], "myapp")
-                self.assertEqual(mock_open.call_args.kwargs["projectpath"], os.path.join(user_dir, "myapp"))
+                self.assertEqual(mock_open.call_args.kwargs["projectpath"], os.path.realpath(os.path.join(user_dir, "myapp")))
 
     def test_creates_template_from_default_base(self):
         with tempfile.TemporaryDirectory() as pkg_dir:
@@ -1987,7 +1987,7 @@ class TestCmdEdit(unittest.TestCase):
             with patch.object(devcode, "_load_settings", return_value={"template_sources": [d]}):
                 with patch("subprocess.run") as mock_run:
                     devcode.edit_command.callback(template="mytemplate")
-            mock_run.assert_called_once_with(["code", root])
+            mock_run.assert_called_once_with(["code", os.path.realpath(root)])
 
     def test_named_template_found_in_second_dir(self):
         with tempfile.TemporaryDirectory() as d1:
@@ -1996,7 +1996,7 @@ class TestCmdEdit(unittest.TestCase):
                 with patch.object(devcode, "_load_settings", return_value={"template_sources": [d1, d2]}):
                     with patch("subprocess.run") as mock_run:
                         devcode.edit_command.callback(template="mytemplate")
-                mock_run.assert_called_once_with(["code", root])
+                mock_run.assert_called_once_with(["code", os.path.realpath(root)])
 
     def test_named_template_not_found_exits(self):
         with tempfile.TemporaryDirectory() as d:
