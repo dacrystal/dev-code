@@ -1,3 +1,14 @@
+## [0.4.0] - 2026-04-24
+
+### Added
+
+- Tombstone release — redirect dev-code to opcd
+
+### Fixed
+
+- Clarify moved notice — say 'moved to' not 'renamed to', add emoji
+- Add siren emoji to moved notice
+
 ## [0.3.1] - 2026-04-11
 
 ### Added
