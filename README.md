@@ -1,4 +1,4 @@
-> 📦 **This package has moved to [opcd](https://github.com/dacrystal/opcd).**
+> 🚨 📦 **This package has moved to [opcd](https://github.com/dacrystal/opcd).**
 > ➡️ Run `pip install opcd` to install the new package.
 
 ---
