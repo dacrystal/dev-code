@@ -5,25 +5,20 @@ build-backend = "hatchling.build"
 [project]
 name = "dev-code"
 dynamic = ["version", "readme"]
-description = "Project · editor · container — simplified"
+description = "Renamed to opcd — run pip install opcd"
 requires-python = ">=3.10"
 authors = [
     {name = "Nasser Alansari", email = "dacrystal@users.noreply.github.com"},
 ]
-dependencies = ["click>=8.0"]
+dependencies = []
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
+    "Development Status :: 7 - Inactive",
 ]
 
 [project.urls]
-"Homepage" = "https://dacrystal.github.io/dev-code/"
-"Source Code" = "https://github.com/dacrystal/dev-code"
-"Issues" = "https://github.com/dacrystal/dev-code/issues"
+"Homepage" = "https://dacrystal.github.io/opcd/"
+"Source Code" = "https://github.com/dacrystal/opcd"
+"Issues" = "https://github.com/dacrystal/opcd/issues"
 
 [project.scripts]
 devcode = "devcode:cli"
@@ -32,21 +27,7 @@ devcode = "devcode:cli"
 source = "vcs"
 
 [tool.hatch.build.targets.wheel]
-force-include = {"src/devcode.py" = "devcode.py", "src/templates" = "dev_code_templates"}
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-
-[dependency-groups]
-test = ["pytest>=7", "pytest-cov>=4"]
-dev = [
-    "tox>=4",
-    "pyyaml>=6",
-    "git-cliff>=2",
-    "ruff>=0.15.10",
-    "mypy>=1.20.0",
-]
+force-include = {"src/devcode.py" = "devcode.py"}
 
 [tool.hatch.metadata.hooks.fancy-pypi-readme]
 content-type = "text/markdown"

@@ -1,3 +1,8 @@
+> **This package has been renamed to [opcd](https://github.com/dacrystal/opcd).**
+> Run `pip install opcd` to get the new package.
+
+---
+
 # dev-code
 
 ```text
