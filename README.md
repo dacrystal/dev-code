@@ -1,5 +1,5 @@
-> **This package has been renamed to [opcd](https://github.com/dacrystal/opcd).**
-> Run `pip install opcd` to get the new package.
+> 📦 **This package has moved to [opcd](https://github.com/dacrystal/opcd).**
+> ➡️ Run `pip install opcd` to install the new package.
 
 ---
 
